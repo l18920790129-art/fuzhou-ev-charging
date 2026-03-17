@@ -1,0 +1,21 @@
+name: Deploy to Render
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy
+        if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
+        run: |
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "✅ Render 部署已触发"
+
+      - name: Deploy Status
+        run: |
+          echo "🚀 代码已推送到 GitHub"
+          echo "📦 仓库: https://github.com/l18920790129-art/fuzhou-ev-charging"
+          echo "🌐 如需自动部署，请在 Render.com 连接此仓库"
