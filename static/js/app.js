@@ -849,7 +849,7 @@ async function pollChatTask(taskId) {
       if (data.status === 'completed') {
         setAgentStatus('idle');
         // 移除"分析中"提示消息
-        const msgs = document.querySelectorAll('.assistant-message');
+        const msgs = document.querySelectorAll('.message.assistant-message');
         if (msgs.length > 0) {
           const last = msgs[msgs.length - 1];
           if (last.textContent.includes('正在分析中') || last.textContent.includes('正在调用RAG')) {
