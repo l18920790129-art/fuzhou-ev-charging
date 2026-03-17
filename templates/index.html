@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>福州充电桩智能选址系统</title>
   {% load static %}
+  <!-- 高德地图安全密钥配置（必须在SDK加载前设置） -->
+  <script type="text/javascript">
+    window._AMapSecurityConfig = {
+      securityJsCode: '8a6ce464b341ed167f9f4d9e6ac49f42'
+    };
+  </script>
   <!-- 高德地图 JS API -->
   <script src="https://webapi.amap.com/maps?v=2.0&key=283b21e285a807bf7bda4cf43e838a26&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch"></script>
   <!-- Marked.js for markdown rendering -->

@@ -20,11 +20,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制项目代码
 COPY . .
 
-# 收集静态文件
-RUN python manage.py collectstatic --noinput || true
+# 收集静态文件（使用临时SECRET_KEY，避免构建时需要数据库）
+RUN SECRET_KEY="build-time-secret-key-not-for-production" \
+    DEBUG="False" \
+    DATABASE_URL="" \
+    python manage.py collectstatic --noinput || echo "collectstatic skipped"
 
 # 创建数据目录
-RUN mkdir -p /app/knowledge_base/chroma_db /app/media
+RUN mkdir -p /app/knowledge_base/chroma_db /app/media /app/logs
 
 # 暴露端口
 EXPOSE 8000
