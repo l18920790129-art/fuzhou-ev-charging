@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: fuzhou-ev-charging
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+      python manage.py migrate
+      python data/init_fuzhou_data.py
+      python data/enhance_data.py
+      python knowledge_base/build_knowledge_base.py
+    startCommand: gunicorn fuzhou_ev_charging.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: fuzhou_ev_charging.settings
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: AMAP_API_KEY
+        value: 283b21e285a807bf7bda4cf43e838a26
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: "*"
