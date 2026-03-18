@@ -74,7 +74,11 @@ def traffic_flow(request):
     for t in qs:
         item = {
             "id": t.id, "road_name": t.road_name,
-            "road_level": t.road_level, "road_level_display": t.get_road_level_display(),
+            "road_level": t.road_level, "road_level_display": {
+                'primary': '主干道', 'secondary': '次干道', 'highway': '高速公路',
+                'expressway': '高速公路', 'urban_expressway': '城市快速路',
+                'main_road': '主干道', 'secondary_road': '次干道'
+            }.get(t.road_level, t.get_road_level_display()),
             "start_lat": t.start_lat, "start_lng": t.start_lng,
             "end_lat": t.end_lat, "end_lng": t.end_lng,
             "center_lat": t.center_lat, "center_lng": t.center_lng,
@@ -252,8 +256,8 @@ def quick_score_location(request):
         traffic_score = 3.0
 
     # 4. 可达性评分（基于周边道路等级）
-    highway_count = sum(1 for r in nearby_roads if r['road_level'] in ['expressway', 'urban_expressway'])
-    main_road_count = sum(1 for r in nearby_roads if r['road_level'] == 'main_road')
+    highway_count = sum(1 for r in nearby_roads if r['road_level'] in ['expressway', 'urban_expressway', 'highway'])
+    main_road_count = sum(1 for r in nearby_roads if r['road_level'] in ['main_road', 'primary'])
     accessibility_score = min(10.0, highway_count * 2.0 + main_road_count * 1.5 + 4.0)
 
     # 5. 竞争分析（现有充电站数量）

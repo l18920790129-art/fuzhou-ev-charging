@@ -62,6 +62,18 @@ def analyze_location(request):
             logger.error(f"Agent分析失败: {e}")
             task.llm_reasoning = f"Agent分析完成（快速模式）：\n\n该位置综合评分 {quick['total_score']}/10\n\n**POI分析**：周边{len(quick.get('nearby_pois', []))}个兴趣点，POI评分{quick['poi_score']}/10\n\n**交通流量**：周边{len(quick.get('nearby_roads', []))}条主干道，流量评分{quick['traffic_score']}/10\n\n**可达性**：可达性评分{quick['accessibility_score']}/10\n\n**环境检查**：{'通过' if quick['exclusion_check'] else '未通过，位于禁止区域'}"
             task.status = 'completed'
+        # 保存LocationMemory
+        try:
+            from memory.models import MemorySession, LocationMemory
+            session_obj, _ = MemorySession.objects.get_or_create(session_id=session_id)
+            LocationMemory.objects.create(
+                session=session_obj,
+                latitude=lat, longitude=lng,
+                address=f"({lat:.4f}, {lng:.4f})",
+                score=quick['total_score']
+            )
+        except Exception as me:
+            logger.warning(f"LocationMemory保存失败: {me}")
         task.save()
 
     t = threading.Thread(target=run_agent)
