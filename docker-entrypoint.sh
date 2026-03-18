@@ -24,6 +24,10 @@ else:
     print(f'数据库已有 {POIData.objects.count()} 条POI数据，跳过初始化')
 "
 
+# 更新主干道真实坐标数据（每次启动都执行，确保数据最新）
+echo ">>> 更新主干道真实坐标数据..."
+python fix_roads.py || echo "道路数据更新跳过"
+
 # 构建知识库（如果不存在）
 echo ">>> 检查知识库..."
 python -c "
