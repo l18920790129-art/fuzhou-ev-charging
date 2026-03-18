@@ -553,21 +553,23 @@ async function loadHeatmapData(map, evOnly = false) {
     const points = data.data.map(p => ({
       lng: p.lng,
       lat: p.lat,
-      count: evOnly ? Math.round(p.weight * 0.04) : p.weight,
+      count: evOnly ? (p.ev_ratio != null ? Math.round(p.weight * p.ev_ratio * 100) : Math.round(p.weight * 8)) : p.weight,
     }));
     AMap.plugin('AMap.HeatMap', () => {
       const heatmap = new AMap.HeatMap(map, {
-        radius: 35,
-        opacity: [0, 0.85],
+        radius: 50,
+        opacity: [0, 0.9],
         gradient: {
-          0.1: '#00ff00',
-          0.3: '#ffff00',
-          0.5: '#ff8c00',
-          0.7: '#ff4500',
-          1.0: '#ff0000',
+          0.05: '#00e5ff',
+          0.2:  '#00ff00',
+          0.4:  '#ffff00',
+          0.6:  '#ff8c00',
+          0.8:  '#ff4500',
+          1.0:  '#ff0000',
         },
+        zooms: [3, 20],
       });
-      heatmap.setDataSet({ data: points, max: 100 });
+      heatmap.setDataSet({ data: points, max: evOnly ? 20 : 100 });
       STATE.heatmapLayer = heatmap;
     });
     // 加载道路统计
@@ -621,10 +623,11 @@ async function loadRoadPolylines(map) {
         path: amapPath,
         strokeColor: getFlowColor(road.daily_flow),
         strokeWeight: strokeWeight,
-        strokeOpacity: 0.85,
+        strokeOpacity: 0.9,
         showDir: true,
         lineJoin: 'round',
         lineCap: 'round',
+        zIndex: 10,
       });
       polyline.setMap(map);
       STATE.roadPolylines.push(polyline);

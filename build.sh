@@ -1,30 +1,17 @@
 #!/bin/bash
 # Render构建脚本
 set -e
-
 echo "=== 安装依赖 ==="
 pip install -r requirements.txt
-
 echo "=== 收集静态文件 ==="
 python manage.py collectstatic --noinput
-
 echo "=== 数据库迁移 ==="
 python manage.py migrate
-
 echo "=== 初始化数据 ==="
 python data/init_fuzhou_data.py || echo "数据初始化跳过（已存在）"
 python data/enhance_data.py || echo "数据增强跳过（已存在）"
-
-echo "=== 修复旧数据中的road_level值 ==="
-python manage.py shell -c "
-from maps.models import TrafficFlow
-fixed = TrafficFlow.objects.filter(road_level=\'primary\').update(road_level=\'main_road\')
-fixed2 = TrafficFlow.objects.filter(road_level=\'secondary\').update(road_level=\'secondary_road\')
-fixed3 = TrafficFlow.objects.filter(road_level=\'highway\').update(road_level=\'expressway\')
-print(f\'修复road_level: primary->main_road({fixed}条), secondary->secondary_road({fixed2}条)\')
-" || echo "road_level修复跳过"
-
+echo "=== 更新主干道真实坐标数据 ==="
+python fix_roads.py || echo "道路数据更新跳过"
 echo "=== 构建知识库 ==="
 python knowledge_base/build_knowledge_base.py || echo "知识库构建跳过（已存在或依赖缺失）"
-
 echo "=== 构建完成 ==="
