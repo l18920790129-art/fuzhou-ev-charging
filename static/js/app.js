@@ -553,7 +553,7 @@ async function loadHeatmapData(map, evOnly = false) {
     const points = data.data.map(p => ({
       lng: p.lng,
       lat: p.lat,
-      count: evOnly ? (p.ev_ratio != null ? Math.round(p.weight * p.ev_ratio * 100) : Math.round(p.weight * 8)) : p.weight,
+      count: evOnly ? (p.ev_ratio != null ? Math.round(p.weight * p.ev_ratio * 100) : Math.round(p.weight * 8)) : Math.round(p.weight * 100),
     }));
     AMap.plugin('AMap.HeatMap', () => {
       const heatmap = new AMap.HeatMap(map, {
