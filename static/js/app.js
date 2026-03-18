@@ -118,12 +118,18 @@ function initMap() {
   });
   STATE.mapInstance = map;
 
-  // 添加OpenStreetMap底图瓦片（解决高德底图在境外服务器不显示问题）
-  const osmLayer = new AMap.TileLayer({
-    tileUrl: 'https://tile.openstreetmap.org/[z]/[x]/[y].png',
+  // 添加OpenStreetMap底图瓦片（使用Flexible自定义图层）
+  const osmLayer = new AMap.TileLayer.Flexible({
+    cacheSize: 256,
+    createTile: function(x, y, z, success, fail) {
+      const img = document.createElement('img');
+      img.crossOrigin = 'anonymous';
+      img.onload = function() { success(img); };
+      img.onerror = function() { fail(); };
+      img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    },
     zIndex: 1,
     opacity: 1,
-    tileSize: 256,
   });
   map.add(osmLayer);
 
@@ -513,12 +519,18 @@ function initHeatmap() {
   });
   STATE.heatmapInstance = map;
 
-  // 添加OpenStreetMap底图瓦片
-  const osmLayerHeat = new AMap.TileLayer({
-    tileUrl: 'https://tile.openstreetmap.org/[z]/[x]/[y].png',
+  // 添加OpenStreetMap底图瓦片（使用Flexible自定义图层）
+  const osmLayerHeat = new AMap.TileLayer.Flexible({
+    cacheSize: 256,
+    createTile: function(x, y, z, success, fail) {
+      const img = document.createElement('img');
+      img.crossOrigin = 'anonymous';
+      img.onload = function() { success(img); };
+      img.onerror = function() { fail(); };
+      img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    },
     zIndex: 1,
     opacity: 1,
-    tileSize: 256,
   });
   map.add(osmLayerHeat);
 
