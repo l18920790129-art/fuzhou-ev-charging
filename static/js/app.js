@@ -114,7 +114,7 @@ function initMap() {
   const map = new AMap.Map('amap', {
     zoom: 12,
     center: [119.3034, 26.0756],  // 福州市中心
-    mapStyle: 'amap://styles/dark',
+    mapStyle: 'amap://styles/normal',
     features: ['bg', 'road', 'building', 'point'],
   });
   STATE.mapInstance = map;
@@ -501,7 +501,7 @@ function initHeatmap() {
   const map = new AMap.Map('heatmap-container', {
     zoom: 12,
     center: [119.3034, 26.0756],
-    mapStyle: 'amap://styles/dark',
+    mapStyle: 'amap://styles/normal',
   });
   STATE.heatmapInstance = map;
   map.addControl(new AMap.Scale());
