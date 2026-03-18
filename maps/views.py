@@ -252,13 +252,13 @@ def quick_score_location(request):
         traffic_score = 3.0
 
     # 4. 可达性评分（基于周边道路等级）
-    highway_count = sum(1 for r in nearby_roads if r['road_level'] in ['highway', 'expressway'])
+    highway_count = sum(1 for r in nearby_roads if r['road_level'] in ['expressway', 'urban_expressway'])
     main_road_count = sum(1 for r in nearby_roads if r['road_level'] == 'main_road')
     accessibility_score = min(10.0, highway_count * 2.0 + main_road_count * 1.5 + 4.0)
 
     # 5. 竞争分析（现有充电站数量）
     from maps.models import CandidateLocation
-    existing_stations = CandidateLocation.objects.filter(status='approved')
+    existing_stations = CandidateLocation.objects.filter(status='existing')
     competition_count = 0
     for s in existing_stations:
         dist = haversine(lat, lng, s.latitude, s.longitude)

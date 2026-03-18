@@ -35,6 +35,12 @@ const API = {
 
 // POI类别图标映射
 const POI_ICONS = {
+  // 与models.py POI_CATEGORIES保持一致
+  shopping_mall: '🏬', supermarket: '🛒', office_building: '🏢', hospital: '🏥',
+  school: '🏫', hotel: '🏨', restaurant: '🍜', gas_station: '⛽',
+  parking_lot: '🅿️', subway_station: '🚇', bus_station: '🚉',
+  residential_area: '🏘️', government: '🏛️', scenic_spot: '🌳', sports_center: '🏟️',
+  // 旧版兼容
   shopping: '🏬', hotel: '🏨', hospital: '🏥', school: '🏫',
   office: '🏢', transport: '🚉', park: '🌳', restaurant: '🍜',
   gas_station: '⛽', parking: '🅿️', residential: '🏘️', government: '🏛️',
@@ -126,7 +132,7 @@ function initMap() {
       img.crossOrigin = 'anonymous';
       img.onload = function() { success(img); };
       img.onerror = function() { fail(); };
-      img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+      img.src = `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
     },
     zIndex: 1,
     opacity: 1,
@@ -527,7 +533,7 @@ function initHeatmap() {
       img.crossOrigin = 'anonymous';
       img.onload = function() { success(img); };
       img.onerror = function() { fail(); };
-      img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+      img.src = `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
     },
     zIndex: 1,
     opacity: 1,

@@ -12,10 +12,10 @@ echo "=== 数据库迁移 ==="
 python manage.py migrate
 
 echo "=== 初始化数据 ==="
-DJANGO_SETTINGS_MODULE=fuzhou_ev_charging.settings python data/init_fuzhou_data.py
-DJANGO_SETTINGS_MODULE=fuzhou_ev_charging.settings python data/enhance_data.py
+python data/init_fuzhou_data.py || echo "数据初始化跳过（已存在）"
+python data/enhance_data.py || echo "数据增强跳过（已存在）"
 
 echo "=== 构建知识库 ==="
-DJANGO_SETTINGS_MODULE=fuzhou_ev_charging.settings python knowledge_base/build_knowledge_base.py || echo "知识库构建跳过（已存在）"
+python knowledge_base/build_knowledge_base.py || echo "知识库构建跳过（已存在或依赖缺失）"
 
 echo "=== 构建完成 ==="
