@@ -16,6 +16,7 @@ const STATE = {
   taskPollTimer: null,
   mapInstance: null,
   heatmapInstance: null,
+  heatmapInited: false,   // 热力图是否已初始化
   heatmapLayer: null,
   markers: [],
   poiMarkers: [],
@@ -33,17 +34,15 @@ const API = {
   reports: '/api/reports',
 };
 
-// POI类别图标映射
+// POI类别图标映射（与models.py POI_CATEGORIES保持一致）
 const POI_ICONS = {
-  // 与models.py POI_CATEGORIES保持一致
   shopping_mall: '🏬', supermarket: '🛒', office_building: '🏢', hospital: '🏥',
   school: '🏫', hotel: '🏨', restaurant: '🍜', gas_station: '⛽',
   parking_lot: '🅿️', subway_station: '🚇', bus_station: '🚉',
   residential_area: '🏘️', government: '🏛️', scenic_spot: '🌳', sports_center: '🏟️',
   // 旧版兼容
-  shopping: '🏬', hotel: '🏨', hospital: '🏥', school: '🏫',
-  office: '🏢', transport: '🚉', park: '🌳', restaurant: '🍜',
-  gas_station: '⛽', parking: '🅿️', residential: '🏘️', government: '🏛️',
+  shopping: '🏬', office: '🏢', transport: '🚉', park: '🌳',
+  parking: '🅿️', residential: '🏘️',
 };
 
 // ============================================================
@@ -53,7 +52,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initSession();
   initTabs();
   initMap();
-  initHeatmap();
+  // 注意：initHeatmap() 改为懒加载，切换到热力图Tab时才初始化
+  initHeatmapButtons(); // 只绑定按钮事件，不初始化地图
   initChatHandlers();
   loadReportList();
   loadMemory();
@@ -96,7 +96,20 @@ function initTabs() {
       if (tabName === 'knowledge') loadKnowledgeGraph();
       if (tabName === 'memory') loadMemory();
       if (tabName === 'report') loadReportList();
-      if (tabName === 'heatmap') { setTimeout(() => { if (STATE.heatmapInstance) { STATE.heatmapInstance.setZoom(12); STATE.heatmapInstance.setCenter([119.3034, 26.0756]); STATE.heatmapInstance.resize(); } }, 200); }
+      if (tabName === 'heatmap') {
+        // 热力图懒加载：切换到热力图Tab时才初始化地图
+        if (!STATE.heatmapInited) {
+          // 等待DOM渲染完成后再初始化
+          setTimeout(() => initHeatmap(), 100);
+        } else {
+          // 已初始化则只刷新尺寸
+          setTimeout(() => {
+            if (STATE.heatmapInstance) {
+              STATE.heatmapInstance.resize();
+            }
+          }, 200);
+        }
+      }
     });
   });
 
@@ -114,63 +127,53 @@ function initTabs() {
 }
 
 // ============================================================
-// 高德地图初始化
+// 高德地图初始化（地图选址Tab）
 // ============================================================
 function initMap() {
-  const map = new AMap.Map('amap', {
-    zoom: 12,
-    center: [119.3034, 26.0756],  // 福州市中心
-    features: [],  // 禁用高德默认底图，使用OSM替代
-  });
-  STATE.mapInstance = map;
+  try {
+    const map = new AMap.Map('amap', {
+      zoom: 12,
+      center: [119.3034, 26.0756],  // 福州市中心
+      mapStyle: 'amap://styles/dark',  // 使用高德暗色主题，稳定可靠
+    });
+    STATE.mapInstance = map;
 
-  // 添加OpenStreetMap底图瓦片（使用Flexible自定义图层）
-  const osmLayer = new AMap.TileLayer.Flexible({
-    cacheSize: 256,
-    createTile: function(x, y, z, success, fail) {
-      const img = document.createElement('img');
-      img.crossOrigin = 'anonymous';
-      img.onload = function() { success(img); };
-      img.onerror = function() { fail(); };
-      img.src = `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
-    },
-    zIndex: 1,
-    opacity: 1,
-  });
-  map.add(osmLayer);
+    // 添加比例尺和工具栏
+    map.addControl(new AMap.Scale());
+    map.addControl(new AMap.ToolBar({ position: 'RT' }));
 
-  // 添加比例尺和工具栏
-  map.addControl(new AMap.Scale());
-  map.addControl(new AMap.ToolBar({ position: 'RT' }));
+    // 点击选点
+    map.on('click', onMapClick);
 
-  // 点击选点
-  map.on('click', onMapClick);
+    // 工具栏按钮绑定
+    document.getElementById('btnSelectMode').addEventListener('click', () => {
+      toggleMapBtn('btnSelectMode');
+    });
+    document.getElementById('btnShowPOI').addEventListener('click', () => {
+      const active = toggleMapBtn('btnShowPOI');
+      active ? loadPOIMarkers() : clearPOIMarkers();
+    });
+    document.getElementById('btnShowExclusion').addEventListener('click', () => {
+      const active = toggleMapBtn('btnShowExclusion');
+      active ? loadExclusionZones() : clearExclusionZones();
+    });
+    document.getElementById('btnShowExisting').addEventListener('click', () => {
+      const active = toggleMapBtn('btnShowExisting');
+      active ? loadExistingStations() : clearExistingStations();
+    });
+    document.getElementById('btnClearMarkers').addEventListener('click', clearAllMarkers);
 
-  // 工具栏按钮
-  document.getElementById('btnSelectMode').addEventListener('click', () => {
-    toggleMapBtn('btnSelectMode');
-  });
-  document.getElementById('btnShowPOI').addEventListener('click', () => {
-    const active = toggleMapBtn('btnShowPOI');
-    active ? loadPOIMarkers() : clearPOIMarkers();
-  });
-  document.getElementById('btnShowExclusion').addEventListener('click', () => {
-    const active = toggleMapBtn('btnShowExclusion');
-    active ? loadExclusionZones() : clearExclusionZones();
-  });
-  document.getElementById('btnShowExisting').addEventListener('click', () => {
-    const active = toggleMapBtn('btnShowExisting');
-    active ? loadExistingStations() : clearExistingStations();
-  });
-  document.getElementById('btnClearMarkers').addEventListener('click', clearAllMarkers);
+    // 深度分析按钮
+    document.getElementById('btnDeepAnalysis').addEventListener('click', triggerDeepAnalysis);
+    document.getElementById('btnGenerateReport').addEventListener('click', triggerGenerateReport);
 
-  // 深度分析按钮
-  document.getElementById('btnDeepAnalysis').addEventListener('click', triggerDeepAnalysis);
-  document.getElementById('btnGenerateReport').addEventListener('click', triggerGenerateReport);
+    // 默认加载禁止区域
+    loadExclusionZones();
+    document.getElementById('btnShowExclusion').classList.add('active');
 
-  // 默认加载禁止区域
-  loadExclusionZones();
-  document.getElementById('btnShowExclusion').classList.add('active');
+  } catch (e) {
+    console.error('地图初始化失败:', e);
+  }
 }
 
 function toggleMapBtn(btnId) {
@@ -473,8 +476,6 @@ function clearExclusionZones() {
 // ============================================================
 async function loadExistingStations() {
   try {
-    const res = await fetch(`${API.maps}/pois/?category=existing_station`);
-    // 使用候选位置数据
     const res2 = await fetch(`${API.maps}/candidates/`);
     const data = await res2.json();
     (data.data || []).forEach(s => {
@@ -495,10 +496,15 @@ async function loadExistingStations() {
       marker.setMap(STATE.mapInstance);
       STATE.markers.push(marker);
     });
+    showToast(`已加载 ${(data.data || []).length} 个候选站点`, 'info');
   } catch (e) { console.error(e); }
 }
 
-function clearExistingStations() {}
+function clearExistingStations() {
+  // 清除候选站点标记（在markers数组中）
+  STATE.markers.forEach(m => m.setMap(null));
+  STATE.markers = [];
+}
 
 function clearAllMarkers() {
   STATE.markers.forEach(m => m.setMap(null));
@@ -515,67 +521,64 @@ function clearAllMarkers() {
 }
 
 // ============================================================
-// 热力图初始化
+// 热力图按钮事件绑定（与地图初始化分离，在DOMContentLoaded时绑定）
 // ============================================================
-function initHeatmap() {
-  const map = new AMap.Map('heatmap-container', {
-    zoom: 12,
-    center: [119.3034, 26.0756],
-    features: [],  // 禁用高德默认底图
-  });
-  STATE.heatmapInstance = map;
-
-  // 添加OpenStreetMap底图瓦片（使用Flexible自定义图层）
-  const osmLayerHeat = new AMap.TileLayer.Flexible({
-    cacheSize: 256,
-    createTile: function(x, y, z, success, fail) {
-      const img = document.createElement('img');
-      img.crossOrigin = 'anonymous';
-      img.onload = function() { success(img); };
-      img.onerror = function() { fail(); };
-      img.src = `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
-    },
-    zIndex: 1,
-    opacity: 1,
-  });
-  map.add(osmLayerHeat);
-
-  map.addControl(new AMap.Scale());
-
-  // 加载热力图数据
-  loadHeatmapData(map);
-
+function initHeatmapButtons() {
   document.getElementById('btnHeatmapFlow').addEventListener('click', () => {
     toggleMapBtn('btnHeatmapFlow');
-    loadHeatmapData(map);
+    if (STATE.heatmapInstance) loadHeatmapData(STATE.heatmapInstance);
   });
   document.getElementById('btnHeatmapEV').addEventListener('click', () => {
     toggleMapBtn('btnHeatmapEV');
-    loadHeatmapData(map, true);
+    if (STATE.heatmapInstance) loadHeatmapData(STATE.heatmapInstance, true);
   });
   document.getElementById('btnShowRoads').addEventListener('click', () => {
     const active = toggleMapBtn('btnShowRoads');
-    active ? loadRoadPolylines(map) : clearRoadPolylines();
+    if (STATE.heatmapInstance) {
+      active ? loadRoadPolylines(STATE.heatmapInstance) : clearRoadPolylines();
+    }
   });
+}
+
+// ============================================================
+// 热力图初始化（懒加载，切换到热力图Tab时才调用）
+// ============================================================
+function initHeatmap() {
+  if (STATE.heatmapInited) return;
+  try {
+    const map = new AMap.Map('heatmap-container', {
+      zoom: 12,
+      center: [119.3034, 26.0756],
+      mapStyle: 'amap://styles/dark',  // 使用高德暗色主题
+    });
+    STATE.heatmapInstance = map;
+    STATE.heatmapInited = true;
+
+    // 添加比例尺
+    map.addControl(new AMap.Scale());
+
+    // 加载热力图数据
+    loadHeatmapData(map);
+
+  } catch (e) {
+    console.error('热力图初始化失败:', e);
+  }
 }
 
 async function loadHeatmapData(map, evOnly = false) {
   try {
     const res = await fetch(`${API.maps}/heatmap/`);
     const data = await res.json();
-
     // 移除旧热力图层
     if (STATE.heatmapLayer) {
       STATE.heatmapLayer.setMap(null);
       STATE.heatmapLayer = null;
     }
-
     const points = data.data.map(p => ({
       lng: p.lng,
       lat: p.lat,
       count: evOnly ? Math.round(p.weight * 0.04) : p.weight,
     }));
-
     AMap.plugin('AMap.HeatMap', () => {
       const heatmap = new AMap.HeatMap(map, {
         radius: 35,
@@ -591,7 +594,6 @@ async function loadHeatmapData(map, evOnly = false) {
       heatmap.setDataSet({ data: points, max: 100 });
       STATE.heatmapLayer = heatmap;
     });
-
     // 加载道路统计
     loadRoadStats();
   } catch (e) { console.error('热力图加载失败:', e); }
@@ -618,8 +620,8 @@ async function loadRoadStats() {
 function getFlowColor(flow) {
   if (flow >= 60000) return '#ff0000';
   if (flow >= 40000) return '#ff4500';
-  if (flow >= 20000) return '#ffd700';
-  return '#00ff00';
+  if (flow >= 20000) return '#ffcc00';
+  return '#00cc44';
 }
 
 async function loadRoadPolylines(map) {
@@ -627,19 +629,32 @@ async function loadRoadPolylines(map) {
     const res = await fetch(`${API.maps}/traffic/`);
     const data = await res.json();
     data.data.forEach(road => {
-      const path = road.path || [[road.start_lat, road.start_lng], [road.end_lat, road.end_lng]];
+      // path字段格式为[[lat, lng], ...]，高德地图需要[lng, lat]格式
+      const rawPath = road.path || [[road.start_lat, road.start_lng], [road.end_lat, road.end_lng]];
+      const amapPath = rawPath.map(p => [p[1], p[0]]);  // [lat,lng] -> [lng,lat]
+
+      // 根据道路等级设置线宽（兼容旧值primary/secondary）
+      let strokeWeight = 3;
+      const level = road.road_level;
+      if (level === 'expressway') strokeWeight = 6;
+      else if (level === 'urban_expressway') strokeWeight = 5;
+      else if (level === 'main_road' || level === 'primary' || level === 'national') strokeWeight = 4;
+      else if (level === 'secondary_road' || level === 'secondary' || level === 'provincial') strokeWeight = 3;
+
       const polyline = new AMap.Polyline({
-        path: path.map(p => [p[1], p[0]]),
+        path: amapPath,
         strokeColor: getFlowColor(road.daily_flow),
-        strokeWeight: road.road_level === 'expressway' ? 5 : road.road_level === 'primary' ? 4 : 3,
-        strokeOpacity: 0.8,
+        strokeWeight: strokeWeight,
+        strokeOpacity: 0.85,
         showDir: true,
+        lineJoin: 'round',
+        lineCap: 'round',
       });
       polyline.setMap(map);
       STATE.roadPolylines.push(polyline);
     });
     showToast(`已加载 ${data.data.length} 条主干道`, 'info');
-  } catch (e) { console.error(e); }
+  } catch (e) { console.error('道路加载失败:', e); }
 }
 
 function clearRoadPolylines() {
@@ -721,7 +736,6 @@ async function pollTaskStatus(taskId) {
           if (data.analysis_detail?.tool_calls) {
             updateToolCallsLog(data.analysis_detail.tool_calls);
           } else {
-            // 显示默认工具调用记录
             updateToolCallsLog([
               { tool: 'rag_search', input: '充电桩选址规范', output: 'RAG检索完成' },
               { tool: 'query_knowledge_graph', input: '鼓楼区', output: '知识图谱查询完成' },
@@ -744,14 +758,13 @@ async function pollTaskStatus(taskId) {
         STATE.taskPollTimer = setTimeout(poll, 3000);
       } else {
         setAgentStatus('idle');
-        // 超时后尝试最后一次获取结果
         const finalRes = await fetch(`${API.analysis}/task/${taskId}/`);
         const finalData = await finalRes.json();
         if (finalData.llm_reasoning) {
           addChatMessage('assistant', finalData.llm_reasoning);
           showToast('AI分析完成！', 'success');
         } else {
-          addChatMessage('assistant', '⏱️ 分析时间较长，请稍后在“历史记忆”中查看结果，或重新发起分析。');
+          addChatMessage('assistant', '⏱️ 分析时间较长，请稍后在"历史记忆"中查看结果，或重新发起分析。');
         }
       }
     } catch (e) {
@@ -782,7 +795,6 @@ function addChatMessage(role, content) {
 
   let html = '';
   if (role === 'assistant') {
-    // 渲染Markdown
     try {
       html = marked.parse(content);
     } catch (e) {
@@ -857,7 +869,6 @@ async function sendMessage() {
     const data = await res.json();
 
     if (data.task_id) {
-      // 异步模式：轮询任务状态
       addChatMessage('assistant', '🔍 AI正在分析中，正在调用RAG知识库和知识图谱...');
       pollChatTask(data.task_id);
     } else if (data.response) {
@@ -884,7 +895,6 @@ async function pollChatTask(taskId) {
       const data = await res.json();
       if (data.status === 'completed') {
         setAgentStatus('idle');
-        // 移除"分析中"提示消息
         const msgs = document.querySelectorAll('.message.assistant-message');
         if (msgs.length > 0) {
           const last = msgs[msgs.length - 1];
@@ -1027,7 +1037,6 @@ async function triggerGenerateReport() {
 
   showLoading('正在生成选址报告...');
   try {
-    // 支持两种模式：有task_id用task_id，否则直接用坐标
     const body = STATE.currentTaskId
       ? { task_id: STATE.currentTaskId, session_id: STATE.sessionId }
       : { lat: STATE.selectedLat, lng: STATE.selectedLng,
@@ -1045,7 +1054,6 @@ async function triggerGenerateReport() {
     hideLoading();
     showToast('报告生成成功！', 'success');
 
-    // 切换到报告Tab并显示
     document.querySelector('[data-tab="report"]').click();
     await loadReportList();
     showReportDetail(data);
@@ -1060,7 +1068,7 @@ async function loadReportList() {
     const res = await fetch(`${API.reports}/list/?session_id=${STATE.sessionId}`);
     const data = await res.json();
     const container = document.getElementById('reportList');
-    if (!data.data.length) {
+    if (!data.data || !data.data.length) {
       container.innerHTML = '<p class="hint-text">暂无报告<br>在地图选点并AI分析后可生成</p>';
       return;
     }
@@ -1098,110 +1106,82 @@ function showReportDetail(data) {
   document.getElementById('reportTitle').textContent = data.title || '选址报告';
   document.getElementById('reportActions').style.display = 'flex';
 
-  const score = scoring.total || data.total_score || 0;
-  const grade = score >= 8.5 ? '优秀' : score >= 7.0 ? '良好' : score >= 5.5 ? '一般' : '较差';
+  const body = document.getElementById('reportBody');
+  body.innerHTML = `
+    <div class="report-section">
+      <h3>📍 选址位置</h3>
+      <div class="location-detail">
+        <div class="location-row"><span class="location-label">坐标</span><span class="location-value">${(sel.lat||0).toFixed(6)}, ${(sel.lng||0).toFixed(6)}</span></div>
+        <div class="location-row"><span class="location-label">地址</span><span class="location-value">${sel.address || data.title || '-'}</span></div>
+        <div class="location-row"><span class="location-label">综合评分</span><span class="location-value" style="color:#10b981;font-weight:600">${data.total_score || 0}/10</span></div>
+      </div>
+    </div>
 
-  document.getElementById('reportDetail').innerHTML = `
-    <div class="report-content">
-      <!-- 执行摘要 -->
-      <div class="report-section">
-        <div class="report-section-header">📋 执行摘要</div>
-        <div class="report-section-body">
-          <div class="report-score-grid">
-            <div class="score-card">
-              <div class="score-card-val" style="color:${score>=7?'#10b981':'#f59e0b'}">${score.toFixed(1)}</div>
-              <div class="score-card-label">综合评分 (满分10)</div>
-            </div>
-            <div class="score-card">
-              <div class="score-card-val" style="color:#60a5fa">${grade}</div>
-              <div class="score-card-label">评级</div>
-            </div>
-            <div class="score-card">
-              <div class="score-card-val" style="color:#8b5cf6">${poi.count || 0}</div>
-              <div class="score-card-label">周边POI数量</div>
-            </div>
+    <div class="report-section">
+      <h3>📊 评分详情</h3>
+      <div class="score-details">
+        ${[
+          { label: 'POI密度', val: scoring.poi || 0, color: '#3b82f6' },
+          { label: '交通流量', val: scoring.traffic || 0, color: '#f59e0b' },
+          { label: '可达性', val: scoring.accessibility || 0, color: '#10b981' },
+          { label: '竞争分析', val: scoring.competition || 0, color: '#8b5cf6' },
+        ].map(d => `
+          <div class="score-item">
+            <span class="score-item-label">${d.label}</span>
+            <div class="score-bar-wrap"><div class="score-bar" style="width:${d.val*10}%;background:${d.color}"></div></div>
+            <span class="score-item-val">${(d.val||0).toFixed(1)}</span>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    ${poi.items?.length ? `
+    <div class="report-section">
+      <h3>🏪 周边POI分析（共${poi.count || poi.items.length}个）</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--text-muted)"><th style="text-align:left;padding:4px">名称</th><th>类型</th><th>距离</th><th>评分</th></tr></thead>
+        <tbody>${poi.items.slice(0,8).map(p => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:4px">${p.name}</td>
+            <td style="text-align:center">${p.category_display || p.category}</td>
+            <td style="text-align:center">${p.distance_km}km</td>
+            <td style="text-align:center;color:#10b981">${p.ev_demand_score}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : ''}
+
+    ${traffic.items?.length ? `
+    <div class="report-section">
+      <h3>🚗 交通流量分析</h3>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${traffic.summary || ''}</p>
+      ${traffic.items.slice(0,6).map(r => `
+        <div class="road-item" style="border-left-color:${getFlowColor(r.daily_flow || 0)}">
+          <div class="road-name">${r.road_name}</div>
+          <div class="road-meta">
+            <span>${r.road_level_display || r.road_level}</span>
+            <span class="road-flow">${((r.daily_flow||0)/10000).toFixed(1)}万辆/日</span>
           </div>
-          <div style="margin-top:12px;font-size:12px;color:#94a3b8;line-height:1.6">
-            <strong>选址坐标：</strong>(${sel.lat?.toFixed(6) || '--'}, ${sel.lng?.toFixed(6) || '--'})<br>
-            <strong>地址：</strong>${sel.address || '福州市'}<br>
-            <strong>环境约束：</strong>${scoring.exclusion_check ? '✅ 通过（非水域/林地/保护区）' : '❌ 未通过'}
-          </div>
-        </div>
-      </div>
+        </div>`).join('')}
+    </div>` : ''}
 
-      <!-- 评分详情 -->
-      <div class="report-section">
-        <div class="report-section-header">⭐ 综合评分详情</div>
-        <div class="report-section-body">
-          <table class="data-table">
-            <thead><tr><th>评分维度</th><th>得分</th><th>权重</th><th>说明</th></tr></thead>
-            <tbody>
-              <tr><td>POI密度</td><td style="color:#3b82f6;font-weight:600">${(scoring.poi||0).toFixed(1)}/10</td><td>30%</td><td>周边${poi.count||0}个POI</td></tr>
-              <tr><td>交通流量</td><td style="color:#f59e0b;font-weight:600">${(scoring.traffic||0).toFixed(1)}/10</td><td>25%</td><td>最高日均${(traffic.max_daily_flow||0).toLocaleString()}辆</td></tr>
-              <tr><td>可达性</td><td style="color:#10b981;font-weight:600">${(scoring.accessibility||0).toFixed(1)}/10</td><td>20%</td><td>距主干道距离</td></tr>
-              <tr><td>竞争分析</td><td style="color:#8b5cf6;font-weight:600">7.5/10</td><td>15%</td><td>周边充电站竞争情况</td></tr>
-              <tr><td>配电条件</td><td style="color:#06b6d4;font-weight:600">7.0/10</td><td>10%</td><td>配电基础设施</td></tr>
-              <tr style="background:rgba(37,99,235,0.1)"><td><strong>综合评分</strong></td><td style="color:${score>=7?'#10b981':'#f59e0b'};font-weight:700">${score.toFixed(1)}/10</td><td>100%</td><td><strong>${grade}</strong></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+    ${alts.length ? `
+    <div class="report-section">
+      <h3>📌 备选位置推荐</h3>
+      ${alts.slice(0,5).map((a,i) => `
+        <div style="padding:8px;background:var(--surface);border-radius:6px;margin-bottom:6px">
+          <div style="font-weight:600;font-size:13px">备选${i+1}：${a.name || a.address || `(${(a.lat||0).toFixed(4)}, ${(a.lng||0).toFixed(4)})`}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${a.reason || ''}</div>
+        </div>`).join('')}
+    </div>` : ''}
 
-      <!-- POI分析 -->
-      <div class="report-section">
-        <div class="report-section-header">🏪 POI需求分析</div>
-        <div class="report-section-body">
-          <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">${poi.summary || ''}</p>
-          ${poi.items?.length ? `
-          <table class="data-table">
-            <thead><tr><th>POI名称</th><th>类别</th><th>距离(km)</th><th>日均人流</th><th>需求评分</th></tr></thead>
-            <tbody>${poi.items.slice(0,8).map(p => `
-              <tr><td>${p.name}</td><td>${p.category}</td><td>${p.distance_km}</td><td>${p.daily_flow?.toLocaleString()}</td><td style="color:#f59e0b;font-weight:600">${p.ev_demand_score}/10</td></tr>`).join('')}
-            </tbody>
-          </table>` : ''}
-        </div>
-      </div>
-
-      <!-- 交通流量 -->
-      <div class="report-section">
-        <div class="report-section-header">🚗 交通流量分析</div>
-        <div class="report-section-body">
-          <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">${traffic.summary || ''}</p>
-          ${traffic.items?.length ? `
-          <table class="data-table">
-            <thead><tr><th>道路名称</th><th>等级</th><th>距离(km)</th><th>日均流量</th><th>EV占比</th></tr></thead>
-            <tbody>${traffic.items.slice(0,6).map(r => `
-              <tr><td>${r.road_name}</td><td>${r.road_level}</td><td>${r.distance_km}</td><td style="color:#f59e0b;font-weight:600">${r.daily_flow?.toLocaleString()}</td><td>${r.ev_ratio != null ? (r.ev_ratio*100).toFixed(0) : '--'}%</td></tr>`).join('')}
-            </tbody>
-          </table>` : ''}
-        </div>
-      </div>
-
-      <!-- AI分析结论 -->
-      ${llm ? `
-      <div class="report-section">
-        <div class="report-section-header">🤖 AI智能分析结论</div>
-        <div class="report-section-body">
-          <div class="llm-analysis">${marked.parse(llm)}</div>
-        </div>
-      </div>` : ''}
-
-      <!-- 备选位置 -->
-      ${alts.length ? `
-      <div class="report-section">
-        <div class="report-section-header">📍 其他优质选址推荐</div>
-        <div class="report-section-body">
-          <div class="alt-location-list">
-            ${alts.map((a, i) => `
-              <div class="alt-item">
-                <div class="alt-name">${i+1}. ${a.name} <span class="alt-score">${a.score}/10</span></div>
-                <div class="alt-reason">${a.reason}</div>
-                <div style="font-size:10px;color:#64748b;margin-top:4px">坐标：(${a.lat}, ${a.lng}) · 距选定点：${a.distance_from_selected}km</div>
-              </div>`).join('')}
-          </div>
-        </div>
-      </div>` : ''}
-    </div>`;
+    ${llm ? `
+    <div class="report-section">
+      <h3>🤖 AI综合分析</h3>
+      <div style="font-size:12px;line-height:1.7;color:var(--text-secondary)">${
+        (() => { try { return marked.parse(llm); } catch(e) { return llm.replace(/\n/g,'<br>'); } })()
+      }</div>
+    </div>` : ''}
+  `;
 
   // PDF下载按钮
   document.getElementById('btnDownloadPDF').onclick = () => {
@@ -1217,7 +1197,6 @@ async function loadMemory() {
     const res = await fetch(`${API.memory}/history/?session_id=${STATE.sessionId}`);
     const data = await res.json();
 
-    // 统计
     const msgCount = data.messages?.length || 0;
     const locCount = data.locations?.length || 0;
     document.getElementById('memoryCount').textContent = `${msgCount}条对话`;
@@ -1227,7 +1206,6 @@ async function loadMemory() {
       <div class="memory-stat"><div class="memory-stat-val">${locCount}</div><div class="memory-stat-label">选址记录</div></div>
       <div class="memory-stat"><div class="memory-stat-val">${STATE.sessionId}</div><div class="memory-stat-label">会话ID</div></div>`;
 
-    // 对话历史
     const timeline = document.getElementById('memoryTimeline');
     if (!data.messages?.length) {
       timeline.innerHTML = '<p class="hint-text">暂无对话历史</p>';
@@ -1240,7 +1218,6 @@ async function loadMemory() {
         </div>`).join('');
     }
 
-    // 选址历史
     const locHistory = document.getElementById('locationHistory');
     if (!data.locations?.length) {
       locHistory.innerHTML = '<p class="hint-text">暂无选址历史</p>';
