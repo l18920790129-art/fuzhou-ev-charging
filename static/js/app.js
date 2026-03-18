@@ -268,18 +268,10 @@ async function onMapClick(e) {
   STATE.markers.forEach(m => m.setMap(null));
   STATE.markers = [];
 
-  // 添加选点标记
+  // 添加选点标记（使用content方式，避免btoa不支持emoji的问题）
   const marker = new AMap.Marker({
     position: [lng, lat],
-    icon: new AMap.Icon({
-      size: new AMap.Size(36, 36),
-      image: 'data:image/svg+xml;base64,' + btoa(`
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="16" fill="#2563eb" stroke="#fff" stroke-width="2"/>
-          <text x="18" y="23" text-anchor="middle" fill="white" font-size="16">⚡</text>
-        </svg>`),
-      imageSize: new AMap.Size(36, 36),
-    }),
+    content: `<div style="width:36px;height:36px;background:#2563eb;border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">⚡</div>`,
     offset: new AMap.Pixel(-18, -18),
     title: `候选位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
   });
@@ -410,15 +402,7 @@ async function loadPOIMarkers() {
     data.data.forEach(poi => {
       const marker = new AMap.Marker({
         position: [poi.lng, poi.lat],
-        icon: new AMap.Icon({
-          size: new AMap.Size(24, 24),
-          image: 'data:image/svg+xml;base64,' + btoa(`
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" fill="#f59e0b" opacity="0.8"/>
-              <text x="12" y="16" text-anchor="middle" fill="white" font-size="12">${(POI_ICONS[poi.category] || '📍')}</text>
-            </svg>`),
-          imageSize: new AMap.Size(24, 24),
-        }),
+        content: `<div style="width:24px;height:24px;background:#f59e0b;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.4);cursor:pointer" title="${poi.name}">${POI_ICONS[poi.category] || '📍'}</div>`,
         offset: new AMap.Pixel(-12, -12),
         title: `${poi.name} (评分:${poi.ev_demand_score})`,
       });
@@ -481,15 +465,7 @@ async function loadExistingStations() {
     (data.data || []).forEach(s => {
       const marker = new AMap.Marker({
         position: [s.lng, s.lat],
-        icon: new AMap.Icon({
-          size: new AMap.Size(28, 28),
-          image: 'data:image/svg+xml;base64,' + btoa(`
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">
-              <circle cx="14" cy="14" r="12" fill="#10b981" stroke="#fff" stroke-width="1.5"/>
-              <text x="14" y="19" text-anchor="middle" fill="white" font-size="14">🔌</text>
-            </svg>`),
-          imageSize: new AMap.Size(28, 28),
-        }),
+        content: `<div style="width:28px;height:28px;background:#10b981;border:1.5px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.4)">🔌</div>`,
         offset: new AMap.Pixel(-14, -14),
         title: s.name,
       });
