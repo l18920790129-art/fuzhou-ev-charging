@@ -553,25 +553,29 @@ async function loadHeatmapData(map, evOnly = false) {
     const points = data.data.map(p => ({
       lng: p.lng,
       lat: p.lat,
-      count: evOnly ? (p.ev_ratio != null ? Math.round(p.weight * p.ev_ratio * 100) : Math.round(p.weight * 8)) : Math.round(p.weight * 100),
+      // ev_ratio字段可能不存在，使用默认值0.08
+      count: evOnly
+        ? Math.round(p.weight * (p.ev_ratio || 0.08) * 100)
+        : Math.round(p.weight * 100),
     }));
-    AMap.plugin('AMap.HeatMap', () => {
-      const heatmap = new AMap.HeatMap(map, {
-        radius: 50,
-        opacity: [0, 0.9],
-        gradient: {
-          0.05: '#00e5ff',
-          0.2:  '#00ff00',
-          0.4:  '#ffff00',
-          0.6:  '#ff8c00',
-          0.8:  '#ff4500',
-          1.0:  '#ff0000',
-        },
-        zooms: [3, 20],
-      });
-      heatmap.setDataSet({ data: points, max: evOnly ? 20 : 100 });
-      STATE.heatmapLayer = heatmap;
+    // 创建热力图层
+    const heatmap = new AMap.HeatMap(map, {
+      radius: 50,
+      opacity: [0, 0.9],
+      gradient: {
+        0.01: '#00e5ff',
+        0.2:  '#00ff00',
+        0.4:  '#ffff00',
+        0.6:  '#ff8c00',
+        0.8:  '#ff4500',
+        1.0:  '#ff0000',
+      },
+      zooms: [3, 20],
+      zIndex: 200,
     });
+    heatmap.setDataSet({ data: points, max: evOnly ? 10 : 100 });
+    heatmap.show();
+    STATE.heatmapLayer = heatmap;
     // 加载道路统计
     loadRoadStats();
   } catch (e) { console.error('热力图加载失败:', e); }

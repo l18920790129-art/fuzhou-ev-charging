@@ -161,11 +161,12 @@ def heatmap_data(request):
                     "lat": round(pt[0], 6),
                     "lng": round(pt[1], 6),
                     "weight": road.heat_weight,
+                    "ev_ratio": road.ev_ratio,
                     "flow": road.daily_flow,
                     "road_name": road.road_name,
                 })
         else:
-            # 沿路段插值生成热力点
+            # 沿路段插値生成热力点
             steps = 6
             for i in range(steps + 1):
                 t = i / steps
@@ -175,6 +176,7 @@ def heatmap_data(request):
                     "lat": round(point_lat, 6),
                     "lng": round(point_lng, 6),
                     "weight": road.heat_weight,
+                    "ev_ratio": road.ev_ratio,
                     "flow": road.daily_flow,
                     "road_name": road.road_name,
                 })
