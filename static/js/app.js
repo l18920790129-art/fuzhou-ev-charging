@@ -114,10 +114,19 @@ function initMap() {
   const map = new AMap.Map('amap', {
     zoom: 12,
     center: [119.3034, 26.0756],  // 福州市中心
-    // mapStyle: 'amap://styles/normal',  // 使用默认底图样式
-    features: ['bg', 'road', 'building', 'point'],
+    features: [],  // 禁用高德默认底图，使用OSM替代
   });
   STATE.mapInstance = map;
+
+  // 添加OpenStreetMap底图瓦片（解决高德底图在境外服务器不显示问题）
+  const osmLayer = new AMap.TileLayer({
+    getTileUrl: function(x, y, z) {
+      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    },
+    zIndex: 1,
+    opacity: 1,
+  });
+  map.add(osmLayer);
 
   // 添加比例尺和工具栏
   map.addControl(new AMap.Scale());
@@ -501,9 +510,20 @@ function initHeatmap() {
   const map = new AMap.Map('heatmap-container', {
     zoom: 12,
     center: [119.3034, 26.0756],
-    // mapStyle: 'amap://styles/normal',  // 使用默认底图样式
+    features: [],  // 禁用高德默认底图
   });
   STATE.heatmapInstance = map;
+
+  // 添加OpenStreetMap底图瓦片
+  const osmLayerHeat = new AMap.TileLayer({
+    getTileUrl: function(x, y, z) {
+      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    },
+    zIndex: 1,
+    opacity: 1,
+  });
+  map.add(osmLayerHeat);
+
   map.addControl(new AMap.Scale());
 
   // 加载热力图数据
