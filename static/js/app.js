@@ -120,11 +120,10 @@ function initMap() {
 
   // 添加OpenStreetMap底图瓦片（解决高德底图在境外服务器不显示问题）
   const osmLayer = new AMap.TileLayer({
-    getTileUrl: function(x, y, z) {
-      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-    },
+    tileUrl: 'https://tile.openstreetmap.org/[z]/[x]/[y].png',
     zIndex: 1,
     opacity: 1,
+    tileSize: 256,
   });
   map.add(osmLayer);
 
@@ -516,11 +515,10 @@ function initHeatmap() {
 
   // 添加OpenStreetMap底图瓦片
   const osmLayerHeat = new AMap.TileLayer({
-    getTileUrl: function(x, y, z) {
-      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-    },
+    tileUrl: 'https://tile.openstreetmap.org/[z]/[x]/[y].png',
     zIndex: 1,
     opacity: 1,
+    tileSize: 256,
   });
   map.add(osmLayerHeat);
 
