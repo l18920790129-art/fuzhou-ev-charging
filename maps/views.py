@@ -194,13 +194,17 @@ def candidates_list(request):
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@require_http_methods(["GET", "POST"])
 def quick_score_location(request):
-    """快速评分：基于POI密度、交通流量、可达性、竞争分析"""
+    """快速评分：基于POI密度、交通流量、可达性、竞争分析（支持GET和POST）"""
     try:
-        body = json.loads(request.body)
-        lat = float(body.get('lat'))
-        lng = float(body.get('lng'))
+        if request.method == 'GET':
+            lat = float(request.GET.get('lat'))
+            lng = float(request.GET.get('lng'))
+        else:
+            body = json.loads(request.body)
+            lat = float(body.get('lat'))
+            lng = float(body.get('lng'))
     except (ValueError, TypeError, json.JSONDecodeError):
         return JsonResponse({"error": "Invalid parameters"}, status=400)
 
@@ -231,6 +235,7 @@ def quick_score_location(request):
                 "category_display": p.get_category_display(),
                 "lat": p.latitude, "lng": p.longitude,
                 "ev_demand_score": p.ev_demand_score,
+                "daily_flow": p.daily_flow,
                 "distance_km": round(dist, 3)
             })
     nearby_pois.sort(key=lambda x: x['distance_km'])
@@ -247,7 +252,8 @@ def quick_score_location(request):
         if dist <= 3.0:
             nearby_roads.append({
                 "road_name": r.road_name, "road_level": r.road_level,
-                "daily_flow": r.daily_flow, "distance_km": round(dist, 3)
+                "daily_flow": r.daily_flow, "heat_weight": r.heat_weight,
+                "distance_km": round(dist, 3)
             })
     nearby_roads.sort(key=lambda x: x['distance_km'])
 

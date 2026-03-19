@@ -155,21 +155,30 @@ function onTabSwitch(tabName) {
 // ============================================================
 async function loadDashboard() {
   try {
-    const [poisRes, trafficRes] = await Promise.all([
+    const [poisRes, trafficRes, stationsRes, zonesRes] = await Promise.all([
       fetch(`${API.maps}/pois/`),
       fetch(`${API.maps}/traffic/`),
+      fetch(`${API.maps}/candidates/`),
+      fetch(`${API.maps}/exclusion-zones/`),
     ]);
     const poisData = await poisRes.json();
     const trafficData = await trafficRes.json();
+    const stationsData = await stationsRes.json();
+    const zonesData = await zonesRes.json();
 
     const pois = poisData.data || [];
     const roads = trafficData.data || [];
+    const stations = stationsData.data || [];
+    const zones = zonesData.data || [];
 
     // 更新KPI
     document.getElementById('kpi-poi').textContent = pois.length;
     document.getElementById('kpi-roads').textContent = roads.length;
-    document.getElementById('totalPOI').textContent = pois.length;
-    document.getElementById('totalRoads').textContent = roads.length;
+    if (document.getElementById('totalPOI')) document.getElementById('totalPOI').textContent = pois.length;
+    if (document.getElementById('totalRoads')) document.getElementById('totalRoads').textContent = roads.length;
+    if (document.getElementById('totalStations')) document.getElementById('totalStations').textContent = stations.length;
+    if (document.getElementById('kpi-stations')) document.getElementById('kpi-stations').textContent = stations.length;
+    if (document.getElementById('kpi-exclusion')) document.getElementById('kpi-exclusion').textContent = zones.length;
 
     // 渲染图表
     renderPOICategoryChart(pois);
@@ -762,9 +771,9 @@ async function loadHeatmapData(map, evOnly = false) {
       count: evOnly ? Math.round(p.weight * (p.ev_ratio || 0.08) * 100) : Math.round(p.weight * 100),
     }));
     const heatmap = new AMap.HeatMap(map, {
-      radius: 50, opacity: [0, 0.9],
+      radius: 50, opacity: [0, 0.65],
       gradient: { 0.01:'#00e5ff', 0.2:'#00ff00', 0.4:'#ffff00', 0.6:'#ff8c00', 0.8:'#ff4500', 1.0:'#ff0000' },
-      zooms: [3, 20], zIndex: 200,
+      zooms: [3, 20], zIndex: 150,
     });
     heatmap.setDataSet({ data: points, max: evOnly ? 10 : 100 });
     heatmap.show();
@@ -842,16 +851,16 @@ async function loadRoadPolylines(map) {
     roads.forEach(road => {
       const rawPath = road.path || [[road.start_lat, road.start_lng], [road.end_lat, road.end_lng]];
       const amapPath = rawPath.map(p => [p[1], p[0]]);
-      let strokeWeight = 3;
+      let strokeWeight = 6;
       const level = road.road_level;
-      if (level === 'expressway') strokeWeight = 6;
-      else if (level === 'urban_expressway') strokeWeight = 5;
-      else if (level === 'main_road' || level === 'primary' || level === 'national') strokeWeight = 4;
+      if (level === 'expressway') strokeWeight = 10;
+      else if (level === 'urban_expressway') strokeWeight = 9;
+      else if (level === 'main_road' || level === 'primary' || level === 'national') strokeWeight = 8;
       const polyline = new AMap.Polyline({
         path: amapPath,
         strokeColor: getFlowColor(road.daily_flow),
-        strokeWeight, strokeOpacity: 0.9, showDir: true,
-        lineJoin: 'round', lineCap: 'round', zIndex: 10,
+        strokeWeight, strokeOpacity: 1.0, showDir: true,
+        lineJoin: 'round', lineCap: 'round', zIndex: 300,
       });
       polyline.setMap(map);
       STATE.roadPolylines.push(polyline);
