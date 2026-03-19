@@ -18,7 +18,8 @@ const STATE = {
   heatmapInstance: null,
   heatmapInited: false,
   heatmapLayer: null,
-  markers: [],
+  markers: [],          // 候选位置标记
+  stationMarkers: [],   // 现有充电站标记（独立管理）
   poiMarkers: [],
   exclusionCircles: [],
   roadPolylines: [],
@@ -129,9 +130,22 @@ function onTabSwitch(tabName) {
   }
   if (tabName === 'heatmap') {
     if (!STATE.heatmapInited) {
-      setTimeout(() => initHeatmap(), 100);
+      setTimeout(() => {
+        initHeatmap();
+        // 初始化后自动加载流量热力图
+        setTimeout(() => {
+          if (STATE.heatmapInstance) {
+            loadHeatmapData(STATE.heatmapInstance, false);
+            document.getElementById('btnHeatmapFlow').classList.add('active');
+          }
+        }, 500);
+      }, 100);
     } else {
-      setTimeout(() => { if (STATE.heatmapInstance) STATE.heatmapInstance.resize(); }, 200);
+      setTimeout(() => {
+        if (STATE.heatmapInstance) {
+          STATE.heatmapInstance.resize();
+        }
+      }, 200);
     }
   }
 }
@@ -572,19 +586,22 @@ async function loadPOIMarkers() {
   try {
     const res = await fetch(`${API.maps}/pois/`);
     const data = await res.json();
-    data.data.forEach(poi => {
+    const pois = data.data || data.results || [];
+    if (!pois.length) { showToast('暂无POI数据', 'warning'); return; }
+    pois.forEach(poi => {
       const color = POI_COLORS[poi.category] || '#f59e0b';
+      const icon = POI_ICONS[poi.category] || '\uD83D\uDCCD';
       const marker = new AMap.Marker({
         position: [poi.lng, poi.lat],
-        content: `<div style="width:26px;height:26px;background:${color};border:1.5px solid rgba(255,255,255,0.8);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.4);cursor:pointer" title="${poi.name}">${POI_ICONS[poi.category] || '📍'}</div>`,
+        content: `<div style="width:26px;height:26px;background:${color};border:1.5px solid rgba(255,255,255,0.8);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.4);cursor:pointer" title="${poi.name}">${icon}</div>`,
         offset: new AMap.Pixel(-13, -13),
         title: `${poi.name} (评分:${poi.ev_demand_score})`,
       });
       marker.setMap(STATE.mapInstance);
       STATE.poiMarkers.push(marker);
     });
-    showToast(`已加载 ${data.data.length} 个POI`, 'info');
-  } catch (e) { showToast('POI加载失败', 'error'); }
+    showToast(`已加载 ${pois.length} 个POI`, 'info');
+  } catch (e) { console.error('POI加载失败:', e); showToast('POI加载失败: ' + e.message, 'error'); }
 }
 
 function clearPOIMarkers() {
@@ -595,8 +612,11 @@ function clearPOIMarkers() {
 async function loadExclusionZones() {
   try {
     const res = await fetch(`${API.maps}/exclusion-zones/`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    data.data.forEach(zone => {
+    const zones = data.data || data.results || [];
+    if (!zones.length) return;
+    zones.forEach(zone => {
       const circle = new AMap.Circle({
         center: [zone.center_lng, zone.center_lat],
         radius: zone.radius_km * 1000,
@@ -623,30 +643,35 @@ function clearExclusionZones() {
 
 async function loadExistingStations() {
   try {
+    clearExistingStations(); // 先清除旧的
     const res = await fetch(`${API.maps}/candidates/`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    (data.data || []).forEach(s => {
+    const stations = data.data || data.results || [];
+    if (!stations.length) { showToast('暂无充电站数据', 'warning'); return; }
+    stations.forEach(s => {
       const marker = new AMap.Marker({
         position: [s.lng, s.lat],
-        content: `<div style="width:30px;height:30px;background:#10b981;border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 2px 8px rgba(16,185,129,0.5)">🔌</div>`,
-        offset: new AMap.Pixel(-15, -15),
+        content: `<div style="width:32px;height:32px;background:linear-gradient(135deg,#10b981,#059669);border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 10px rgba(16,185,129,0.6);cursor:pointer" title="${s.name}">⚡</div>`,
+        offset: new AMap.Pixel(-16, -16),
         title: s.name,
       });
       marker.setMap(STATE.mapInstance);
-      STATE.markers.push(marker);
+      STATE.stationMarkers.push(marker);
     });
-    showToast(`已加载 ${(data.data || []).length} 个充电站`, 'info');
-  } catch (e) { console.error(e); }
+    showToast(`已加载 ${stations.length} 个充电站`, 'info');
+  } catch (e) { console.error('充电站加载失败:', e); showToast('充电站加载失败: ' + e.message, 'error'); }
 }
 
 function clearExistingStations() {
-  STATE.markers.forEach(m => m.setMap(null));
-  STATE.markers = [];
+  STATE.stationMarkers.forEach(m => { try { m.setMap(null); } catch(e) {} });
+  STATE.stationMarkers = [];
 }
 
 function clearAllMarkers() {
-  STATE.markers.forEach(m => m.setMap(null));
+  STATE.markers.forEach(m => { try { m.setMap(null); } catch(e) {} });
   STATE.markers = [];
+  clearExistingStations();
   clearPOIMarkers();
   STATE.selectedLat = null;
   STATE.selectedLng = null;
@@ -663,19 +688,50 @@ function clearAllMarkers() {
 // ============================================================
 function initHeatmapButtons() {
   document.getElementById('btnHeatmapFlow').addEventListener('click', () => {
-    toggleMapBtn('btnHeatmapFlow');
-    if (STATE.heatmapInstance) loadHeatmapData(STATE.heatmapInstance);
+    const active = toggleMapBtn('btnHeatmapFlow');
+    // 取消其他按钮激活状态
+    if (active) {
+      document.getElementById('btnHeatmapEV').classList.remove('active');
+    }
+    ensureHeatmapInit(() => {
+      if (active) loadHeatmapData(STATE.heatmapInstance, false);
+      else { if (STATE.heatmapLayer) { STATE.heatmapLayer.hide(); } }
+    });
   });
   document.getElementById('btnHeatmapEV').addEventListener('click', () => {
-    toggleMapBtn('btnHeatmapEV');
-    if (STATE.heatmapInstance) loadHeatmapData(STATE.heatmapInstance, true);
+    const active = toggleMapBtn('btnHeatmapEV');
+    if (active) {
+      document.getElementById('btnHeatmapFlow').classList.remove('active');
+    }
+    ensureHeatmapInit(() => {
+      if (active) loadHeatmapData(STATE.heatmapInstance, true);
+      else { if (STATE.heatmapLayer) { STATE.heatmapLayer.hide(); } }
+    });
   });
   document.getElementById('btnShowRoads').addEventListener('click', () => {
     const active = toggleMapBtn('btnShowRoads');
-    if (STATE.heatmapInstance) {
+    ensureHeatmapInit(() => {
       active ? loadRoadPolylines(STATE.heatmapInstance) : clearRoadPolylines();
-    }
+    });
   });
+}
+
+// 确保热力图地图已初始化，如果未初始化则先初始化再执行callback
+function ensureHeatmapInit(callback) {
+  if (STATE.heatmapInited && STATE.heatmapInstance) {
+    callback();
+  } else {
+    initHeatmap();
+    // 等地图加载完成
+    const checkInterval = setInterval(() => {
+      if (STATE.heatmapInited && STATE.heatmapInstance) {
+        clearInterval(checkInterval);
+        callback();
+      }
+    }, 200);
+    // 超时5秒放弃
+    setTimeout(() => clearInterval(checkInterval), 5000);
+  }
 }
 
 function initHeatmap() {
@@ -687,17 +743,21 @@ function initHeatmap() {
     STATE.heatmapInstance = map;
     STATE.heatmapInited = true;
     map.addControl(new AMap.Scale());
-    loadHeatmapData(map);
+    // 加载柱状图（不需要地图实例）
     loadHeatmapBarChart();
   } catch (e) { console.error('热力图初始化失败:', e); }
 }
 
 async function loadHeatmapData(map, evOnly = false) {
   try {
+    if (!map) { console.warn('热力图地图未初始化'); return; }
     const res = await fetch(`${API.maps}/heatmap/`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (STATE.heatmapLayer) { STATE.heatmapLayer.setMap(null); STATE.heatmapLayer = null; }
-    const points = data.data.map(p => ({
+    const heatPoints = data.data || data.results || [];
+    if (!heatPoints.length) { showToast('暂无热力图数据', 'warning'); return; }
+    if (STATE.heatmapLayer) { try { STATE.heatmapLayer.setMap(null); } catch(e) {} STATE.heatmapLayer = null; }
+    const points = heatPoints.map(p => ({
       lng: p.lng, lat: p.lat,
       count: evOnly ? Math.round(p.weight * (p.ev_ratio || 0.08) * 100) : Math.round(p.weight * 100),
     }));
@@ -772,9 +832,14 @@ function getFlowColor(flow) {
 
 async function loadRoadPolylines(map) {
   try {
+    if (!map) { console.warn('地图未初始化'); return; }
+    clearRoadPolylines();
     const res = await fetch(`${API.maps}/traffic/`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    data.data.forEach(road => {
+    const roads = data.data || data.results || [];
+    if (!roads.length) { showToast('暂无道路数据', 'warning'); return; }
+    roads.forEach(road => {
       const rawPath = road.path || [[road.start_lat, road.start_lng], [road.end_lat, road.end_lng]];
       const amapPath = rawPath.map(p => [p[1], p[0]]);
       let strokeWeight = 3;
@@ -791,12 +856,12 @@ async function loadRoadPolylines(map) {
       polyline.setMap(map);
       STATE.roadPolylines.push(polyline);
     });
-    showToast(`已加载 ${data.data.length} 条主干道`, 'info');
-  } catch (e) { console.error('道路加载失败:', e); }
+    showToast(`已加载 ${roads.length} 条主干道`, 'info');
+  } catch (e) { console.error('道路加载失败:', e); showToast('道路加载失败: ' + e.message, 'error'); }
 }
 
 function clearRoadPolylines() {
-  STATE.roadPolylines.forEach(p => p.setMap(null));
+  STATE.roadPolylines.forEach(p => { try { p.setMap(null); } catch(e) {} });
   STATE.roadPolylines = [];
 }
 
