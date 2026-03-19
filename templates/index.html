@@ -3,66 +3,114 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>福州充电桩智能选址系统</title>
+  <title>⚡ 福州新能源充电桩智能选址平台 v3.0</title>
   {% load static %}
-  <!-- 高德地图安全密钥配置（必须在SDK加载前设置） -->
   <script type="text/javascript">
-    window._AMapSecurityConfig = {
-      securityJsCode: '8a6ce464b341ed167f9f4d9e6ac49f42'
-    };
+    window._AMapSecurityConfig = { securityJsCode: '8a6ce464b341ed167f9f4d9e6ac49f42' };
   </script>
-  <!-- 高德地图 JS API -->
-  <script src="https://webapi.amap.com/maps?v=2.0&key=283b21e285a807bf7bda4cf43e838a26&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch" onerror="console.error('高德地图加载失败，请检查API Key配置')"></script>
-  <!-- Marked.js for markdown rendering -->
+  <script src="https://webapi.amap.com/maps?v=2.0&key=283b21e285a807bf7bda4cf43e838a26&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch,AMap.InfoWindow"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <!-- ECharts for knowledge graph -->
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
   <link rel="stylesheet" href="{% static 'css/main.css' %}">
 </head>
 <body>
-  <!-- ========== 顶部导航 ========== -->
   <header class="header">
     <div class="header-left">
       <div class="logo">
-        <span class="logo-icon">⚡</span>
-        <span class="logo-text">福州充电桩智能选址系统</span>
+        <div class="logo-icon-wrap">
+          <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+            <circle cx="15" cy="15" r="15" fill="url(#lg1)"/>
+            <path d="M17 4L9 17h7l-3 9 10-13h-8l2-9z" fill="white"/>
+            <defs><linearGradient id="lg1" x1="0" y1="0" x2="30" y2="30"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#10b981"/></linearGradient></defs>
+          </svg>
+        </div>
+        <div class="logo-texts">
+          <span class="logo-title">福州新能源充电桩智能选址平台</span>
+          <span class="logo-sub">EV Charging Intelligence Platform v3.0</span>
+        </div>
       </div>
       <nav class="nav-tabs">
-        <button class="nav-tab active" data-tab="map">🗺️ 地图选址</button>
-        <button class="nav-tab" data-tab="heatmap">🔥 流量热力图</button>
-        <button class="nav-tab" data-tab="analysis">🤖 AI分析</button>
-        <button class="nav-tab" data-tab="knowledge">🕸️ 知识图谱</button>
-        <button class="nav-tab" data-tab="memory">🧠 历史记忆</button>
-        <button class="nav-tab" data-tab="report">📄 选址报告</button>
+        <button class="nav-tab active" data-tab="dashboard"><span class="ti">📊</span>数据大屏</button>
+        <button class="nav-tab" data-tab="map"><span class="ti">🗺️</span>地图选址</button>
+        <button class="nav-tab" data-tab="heatmap"><span class="ti">🔥</span>热力分析</button>
+        <button class="nav-tab" data-tab="analysis"><span class="ti">🤖</span>AI智能分析</button>
+        <button class="nav-tab" data-tab="knowledge"><span class="ti">🕸️</span>知识图谱</button>
+        <button class="nav-tab" data-tab="report"><span class="ti">📄</span>选址报告</button>
+        <button class="nav-tab" data-tab="memory"><span class="ti">🧠</span>历史记忆</button>
       </nav>
     </div>
     <div class="header-right">
+      <div class="realtime-stats">
+        <div class="stat-pill"><span class="stat-dot green"></span><span id="totalPOI">42</span> POI数据</div>
+        <div class="stat-pill"><span class="stat-dot blue"></span><span id="totalRoads">24</span> 道路数据</div>
+        <div class="stat-pill"><span class="stat-dot orange"></span><span id="totalStations">6</span> 充电站</div>
+      </div>
       <div class="session-info">
-        <span class="session-label">会话ID：</span>
-        <span class="session-id" id="sessionId">加载中...</span>
+        <span class="session-label">会话</span>
+        <span class="session-id" id="sessionId">--</span>
       </div>
       <button class="btn-icon" id="btnClearMemory" title="清除记忆">🗑️</button>
     </div>
   </header>
 
-  <!-- ========== 主内容区 ========== -->
   <main class="main-content">
+    <!-- ===== 数据大屏 ===== -->
+    <div class="tab-panel active" id="tab-dashboard">
+      <div class="dashboard-layout">
+        <div class="kpi-row">
+          <div class="kpi-card kpi-blue"><div class="kpi-icon">🏙️</div><div class="kpi-info"><div class="kpi-value" id="kpi-districts">6</div><div class="kpi-label">覆盖行政区</div></div></div>
+          <div class="kpi-card kpi-green"><div class="kpi-icon">📍</div><div class="kpi-info"><div class="kpi-value" id="kpi-poi">42</div><div class="kpi-label">POI分析点位</div></div></div>
+          <div class="kpi-card kpi-orange"><div class="kpi-icon">🛣️</div><div class="kpi-info"><div class="kpi-value" id="kpi-roads">24</div><div class="kpi-label">主干道监控</div></div></div>
+          <div class="kpi-card kpi-purple"><div class="kpi-icon">🔌</div><div class="kpi-info"><div class="kpi-value" id="kpi-stations">6</div><div class="kpi-label">现有充电站</div></div></div>
+          <div class="kpi-card kpi-red"><div class="kpi-icon">🚫</div><div class="kpi-info"><div class="kpi-value" id="kpi-exclusion">8</div><div class="kpi-label">禁止区域</div></div></div>
+          <div class="kpi-card kpi-teal"><div class="kpi-icon">🤖</div><div class="kpi-info"><div class="kpi-value" id="kpi-analysis">0</div><div class="kpi-label">AI分析次数</div></div></div>
+        </div>
+        <div class="charts-row">
+          <div class="chart-card"><div class="chart-header"><span class="chart-title">📊 POI类别分布</span></div><div id="chart-poi-category" class="chart-box"></div></div>
+          <div class="chart-card"><div class="chart-header"><span class="chart-title">🚗 各区域交通流量</span></div><div id="chart-traffic-district" class="chart-box"></div></div>
+          <div class="chart-card"><div class="chart-header"><span class="chart-title">⚡ 充电需求评分分布</span></div><div id="chart-ev-demand" class="chart-box"></div></div>
+        </div>
+        <div class="bottom-row">
+          <div class="table-card">
+            <div class="table-header"><span class="table-title">🏆 高需求POI排行榜</span><button class="btn-sm" onclick="switchTab('map')">查看地图 →</button></div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead><tr><th>排名</th><th>POI名称</th><th>类别</th><th>所属区域</th><th>日均人流</th><th>需求评分</th><th>操作</th></tr></thead>
+                <tbody id="topPoiBody"><tr><td colspan="7" class="loading-row"><div class="spinner-sm"></div> 加载中...</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="status-card">
+            <div class="status-header"><span class="status-title">🔴 系统实时状态</span><span class="status-time" id="lastUpdateTime">--</span></div>
+            <div class="status-list">
+              <div class="status-item"><span class="status-icon green">●</span><span class="status-name">高德地图API</span><span class="status-val">正常</span></div>
+              <div class="status-item"><span class="status-icon green">●</span><span class="status-name">DeepSeek AI</span><span class="status-val">就绪</span></div>
+              <div class="status-item"><span class="status-icon green">●</span><span class="status-name">数据库</span><span class="status-val">在线</span></div>
+              <div class="status-item"><span class="status-icon green">●</span><span class="status-name">知识库</span><span class="status-val">已加载</span></div>
+              <div class="status-item"><span class="status-icon blue">●</span><span class="status-name">热力图引擎</span><span class="status-val">待激活</span></div>
+            </div>
+            <div class="quick-actions">
+              <button class="quick-action-btn" onclick="switchTab('map')">🗺️ 开始选址</button>
+              <button class="quick-action-btn" onclick="switchTab('analysis')">🤖 AI分析</button>
+              <button class="quick-action-btn" onclick="switchTab('heatmap')">🔥 热力图</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
-    <!-- ===== Tab: 地图选址 ===== -->
-    <div class="tab-panel active" id="tab-map">
+    <!-- ===== 地图选址 ===== -->
+    <div class="tab-panel" id="tab-map">
       <div class="panel-layout">
-        <!-- 地图区域 -->
         <div class="map-container">
           <div id="amap" class="amap-box"></div>
-          <!-- 地图工具栏 -->
           <div class="map-toolbar">
-            <button class="map-btn active" id="btnSelectMode" title="选点模式">📍 选点</button>
-            <button class="map-btn" id="btnShowPOI" title="显示POI">🏪 POI</button>
-            <button class="map-btn" id="btnShowExclusion" title="显示禁止区域">🚫 禁区</button>
-            <button class="map-btn" id="btnShowExisting" title="已有充电站">🔌 现有站</button>
-            <button class="map-btn" id="btnClearMarkers" title="清除标记">🧹 清除</button>
+            <button class="map-btn active" id="btnSelectMode">📍 选点</button>
+            <button class="map-btn" id="btnShowPOI">🏪 POI</button>
+            <button class="map-btn" id="btnShowExclusion">🚫 禁区</button>
+            <button class="map-btn" id="btnShowExisting">🔌 现有站</button>
+            <button class="map-btn" id="btnClearMarkers">🧹 清除</button>
           </div>
-          <!-- 图例 -->
           <div class="map-legend">
             <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>禁止区域</div>
             <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>候选位置</div>
@@ -70,10 +118,7 @@
             <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>POI点位</div>
           </div>
         </div>
-
-          <!-- 右侧信息面板 -->
-          <div class="info-panel">
-          <!-- 选点信息 -->
+        <div class="info-panel">
           <div class="card" id="locationCard">
             <div class="card-header">
               <span class="card-icon">📍</span>
@@ -81,74 +126,57 @@
               <span class="status-badge" id="locationStatus">未选择</span>
             </div>
             <div class="card-body" id="locationInfo">
-              <p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动避开水域、林地等禁止区域</p>
+              <p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动检测禁止区域并评分</p>
             </div>
-            <!-- 快捷选点区域 -->
             <div class="card-body" style="border-top:1px solid var(--border);padding-top:10px">
-              <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">🏙️ 快捷选点（福州热门区域）</div>
-              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0756, 119.3034, '五四路商圈')">五四路</button>
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0820, 119.2960, '鼓楼中心')">鼓楼区</button>
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0612, 119.3089, '台江万达')">台江区</button>
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0480, 119.2890, '仓山万象城')">仓山区</button>
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0950, 119.3200, '晋安万宝')">晋安区</button>
-                <button class="map-btn" style="font-size:10px;padding:4px 8px" onclick="quickSelectLocation(26.0680, 119.3150, '福州南站')">南站片区</button>
+              <div class="section-label">🏙️ 快捷选点</div>
+              <div class="quick-locations">
+                <button class="loc-btn" onclick="quickSelectLocation(26.0756,119.3034,'五四路商圈')">五四路</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0820,119.2960,'鼓楼中心')">鼓楼区</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0612,119.3089,'台江万达')">台江区</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0480,119.2890,'仓山万象城')">仓山区</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0950,119.3200,'晋安万宝')">晋安区</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0680,119.3150,'福州南站')">南站</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0823,119.3312,'福州火车站')">火车站</button>
+                <button class="loc-btn" onclick="quickSelectLocation(26.0789,119.2812,'软件园')">软件园</button>
               </div>
-              <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">或手动输入坐标：</div>
-              <div style="display:flex;gap:4px">
-                <input id="manualLat" type="number" step="0.0001" placeholder="纬度 26.07" value="26.0756"
-                  style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:11px">
-                <input id="manualLng" type="number" step="0.0001" placeholder="经度 119.30" value="119.3034"
-                  style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:11px">
-                <button class="map-btn" style="font-size:10px;padding:5px 10px;white-space:nowrap" onclick="manualSelectLocation()">确认</button>
+              <div class="section-label" style="margin-top:10px">手动输入坐标：</div>
+              <div class="coord-input-row">
+                <input id="manualLat" type="number" step="0.0001" placeholder="纬度 26.07" value="26.0756" class="coord-input">
+                <input id="manualLng" type="number" step="0.0001" placeholder="经度 119.30" value="119.3034" class="coord-input">
+                <button class="btn-confirm" onclick="manualSelectLocation()">确认</button>
               </div>
             </div>
           </div>
-
-          <!-- 快速评分 -->
           <div class="card" id="quickScoreCard" style="display:none">
-            <div class="card-header">
-              <span class="card-icon">⭐</span>
-              <span class="card-title">快速评分</span>
-            </div>
+            <div class="card-header"><span class="card-icon">⭐</span><span class="card-title">智能评分</span><span class="score-badge" id="scoreBadge">--</span></div>
             <div class="card-body">
               <div class="score-main">
-                <div class="score-circle" id="scoreCircle">
-                  <span class="score-value" id="scoreValue">--</span>
-                  <span class="score-unit">/10</span>
+                <div class="score-ring-wrap">
+                  <svg class="score-ring" viewBox="0 0 80 80">
+                    <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="6"/>
+                    <circle cx="40" cy="40" r="34" fill="none" stroke="url(#sg)" stroke-width="6" stroke-linecap="round" stroke-dasharray="213.6" stroke-dashoffset="213.6" id="scoreRingPath" transform="rotate(-90 40 40)"/>
+                    <defs><linearGradient id="sg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#10b981"/></linearGradient></defs>
+                  </svg>
+                  <div class="score-center"><span class="score-value" id="scoreValue">--</span><span class="score-unit">/10</span></div>
                 </div>
-                <div class="score-grade" id="scoreGrade">--</div>
+                <div class="score-right"><div class="score-grade" id="scoreGrade">--</div><div class="score-bars" id="scoreDetails"></div></div>
               </div>
-              <div class="score-details" id="scoreDetails"></div>
             </div>
           </div>
-
-          <!-- 周边POI -->
           <div class="card" id="poiCard" style="display:none">
-            <div class="card-header">
-              <span class="card-icon">🏪</span>
-              <span class="card-title">周边POI</span>
-              <span class="badge" id="poiCount">0</span>
-            </div>
-            <div class="card-body">
-              <div class="poi-list" id="poiList"></div>
-            </div>
+            <div class="card-header"><span class="card-icon">🏪</span><span class="card-title">周边POI（2km内）</span><span class="badge" id="poiCount">0</span></div>
+            <div class="card-body" style="padding:8px"><div class="poi-list" id="poiList"></div></div>
           </div>
-
-          <!-- 操作按钮 -->
           <div class="action-buttons" id="actionButtons" style="display:none">
-            <button class="btn btn-primary" id="btnDeepAnalysis">
-              🤖 AI深度分析
-            </button>
-            <button class="btn btn-secondary" id="btnGenerateReport">
-              📄 生成报告
-            </button>
+            <button class="btn btn-primary" id="btnDeepAnalysis">🤖 AI深度分析</button>
+            <button class="btn btn-secondary" id="btnGenerateReport">📄 生成报告</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== Tab: 热力图 ===== -->
+    <!-- ===== 热力图 ===== -->
     <div class="tab-panel" id="tab-heatmap">
       <div class="panel-layout">
         <div class="map-container">
@@ -161,235 +189,177 @@
         </div>
         <div class="info-panel">
           <div class="card">
-            <div class="card-header">
-              <span class="card-icon">🔥</span>
-              <span class="card-title">主干道流量统计</span>
-            </div>
+            <div class="card-header"><span class="card-icon">🔥</span><span class="card-title">主干道流量统计</span></div>
+            <div class="card-body" style="padding:8px"><div class="road-stats" id="roadStats"><div class="loading-spinner"><div class="spinner"></div><span>加载中...</span></div></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-icon">📊</span><span class="card-title">流量分级说明</span></div>
             <div class="card-body">
-              <div class="road-stats" id="roadStats">
-                <div class="loading-spinner">加载中...</div>
+              <div class="heatmap-legend">
+                <div class="heat-level"><span class="heat-bar" style="background:linear-gradient(90deg,#ff0000,#ff4500)"></span><span>极高流量 (&gt;60000辆/日)</span></div>
+                <div class="heat-level"><span class="heat-bar" style="background:linear-gradient(90deg,#ff8c00,#ffa500)"></span><span>高流量 (40000-60000辆/日)</span></div>
+                <div class="heat-level"><span class="heat-bar" style="background:linear-gradient(90deg,#ffff00,#adff2f)"></span><span>中等流量 (20000-40000辆/日)</span></div>
+                <div class="heat-level"><span class="heat-bar" style="background:linear-gradient(90deg,#00ff7f,#00bfff)"></span><span>低流量 (&lt;20000辆/日)</span></div>
               </div>
             </div>
           </div>
           <div class="card">
-            <div class="card-header">
-              <span class="card-icon">📊</span>
-              <span class="card-title">流量分级说明</span>
-            </div>
-            <div class="card-body">
-              <div class="heatmap-legend">
-                <div class="heat-level"><span class="heat-bar high"></span><span>极高流量 (&gt;60000辆/日)</span></div>
-                <div class="heat-level"><span class="heat-bar medium-high"></span><span>高流量 (40000-60000辆/日)</span></div>
-                <div class="heat-level"><span class="heat-bar medium"></span><span>中等流量 (20000-40000辆/日)</span></div>
-                <div class="heat-level"><span class="heat-bar low"></span><span>低流量 (&lt;20000辆/日)</span></div>
-              </div>
-            </div>
+            <div class="card-header"><span class="card-icon">📈</span><span class="card-title">流量分布图</span></div>
+            <div id="chart-heatmap-bar" style="height:200px;padding:8px"></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== Tab: AI分析 ===== -->
+    <!-- ===== AI分析 ===== -->
     <div class="tab-panel" id="tab-analysis">
       <div class="analysis-layout">
-        <!-- 左侧：Agent对话 -->
         <div class="chat-panel">
           <div class="chat-header">
-            <span class="chat-icon">🤖</span>
-            <span class="chat-title">LangChain Agent 智能分析</span>
-            <div class="agent-status" id="agentStatus">
-              <span class="status-dot idle"></span>
-              <span>就绪</span>
+            <div class="chat-header-left">
+              <div class="agent-avatar">🤖</div>
+              <div>
+                <div class="chat-title">DeepSeek 智能选址助手</div>
+                <div class="chat-subtitle">LangChain Agent + RAG + 知识图谱 + 长期记忆</div>
+              </div>
             </div>
+            <div class="agent-status" id="agentStatus"><span class="status-dot idle" id="agentDot"></span><span id="agentStatusText">就绪</span></div>
           </div>
           <div class="chat-messages" id="chatMessages">
             <div class="message system-message">
-              <div class="message-content">
-                <p>👋 您好！我是福州充电桩智能选址助手。</p>
-                <p>我集成了以下能力：</p>
-                <ul>
-                  <li>📚 <strong>RAG知识检索</strong>：基于专业选址规范和案例库</li>
-                  <li>🕸️ <strong>知识图谱推理</strong>：分析POI、道路、区域关联关系</li>
-                  <li>📊 <strong>实时数据分析</strong>：福州市POI和交通流量数据</li>
-                  <li>🧠 <strong>长期记忆</strong>：记住您的历史分析偏好</li>
-                </ul>
-                <p>您可以在地图上选点后点击"AI深度分析"，或直接在此输入问题。</p>
+              <div class="message-avatar">🤖</div>
+              <div class="message-bubble">
+                <p>👋 您好！我是福州充电桩智能选址助手，由 <strong>DeepSeek AI</strong> 驱动。</p>
+                <div class="capability-grid">
+                  <div class="cap-item"><span>📚</span>RAG知识检索</div>
+                  <div class="cap-item"><span>🕸️</span>知识图谱推理</div>
+                  <div class="cap-item"><span>📊</span>实时数据分析</div>
+                  <div class="cap-item"><span>🧠</span>长期记忆</div>
+                  <div class="cap-item"><span>🗺️</span>地图联动</div>
+                  <div class="cap-item"><span>📄</span>报告生成</div>
+                </div>
+                <p style="margin-top:8px;color:var(--text-muted);font-size:12px">在地图上选点后点击"AI深度分析"，或直接输入问题。</p>
               </div>
             </div>
           </div>
           <div class="chat-input-area">
+            <div class="selected-location-bar" id="selectedLocationBar" style="display:none">
+              <span>📍</span><span id="selectedLocText">未选择位置</span><button onclick="clearSelectedLocation()">✕</button>
+            </div>
             <div class="chat-input-row">
               <textarea class="chat-input" id="chatInput" placeholder="输入问题，例如：分析五四路沿线的充电桩需求..." rows="2"></textarea>
-              <button class="btn-send" id="btnSend">发送</button>
+              <button class="btn-send" id="btnSend">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M18 10L2 2l3 8-3 8 16-8z" fill="currentColor"/></svg>
+              </button>
             </div>
             <div class="chat-quick-btns">
-              <button class="quick-btn" onclick="sendQuickMsg('福州哪些区域充电桩需求最高？')">需求分析</button>
-              <button class="quick-btn" onclick="sendQuickMsg('充电桩选址有哪些规范要求？')">选址规范</button>
-              <button class="quick-btn" onclick="sendQuickMsg('鼓楼区适合建充电桩的位置有哪些？')">区域推荐</button>
+              <button class="quick-btn" onclick="sendQuickMsg('福州哪些区域充电桩需求最高？')">📍 需求分析</button>
+              <button class="quick-btn" onclick="sendQuickMsg('充电桩选址有哪些规范要求？')">📋 选址规范</button>
+              <button class="quick-btn" onclick="sendQuickMsg('鼓楼区适合建充电桩的位置有哪些？')">🏙️ 区域推荐</button>
+              <button class="quick-btn" onclick="sendQuickMsg('分析福州南站周边的充电桩选址可行性')">🚉 南站分析</button>
+              <button class="quick-btn" onclick="sendQuickMsg('福州软件园附近充电桩需求如何？')">💻 软件园</button>
             </div>
           </div>
         </div>
-
-        <!-- 右侧：分析过程展示 -->
         <div class="analysis-detail-panel">
-          <div class="card">
-            <div class="card-header">
-              <span class="card-icon">🔧</span>
-              <span class="card-title">Agent工具调用记录</span>
-            </div>
-            <div class="card-body">
-              <div class="tool-calls" id="toolCallsLog">
-                <p class="hint-text">Agent分析时将在此展示工具调用过程...</p>
-              </div>
-            </div>
+          <div class="card" style="flex:0 0 auto">
+            <div class="card-header"><span class="card-icon">🔧</span><span class="card-title">Agent工具调用记录</span><span class="badge" id="toolCallCount">0</span></div>
+            <div class="card-body" style="padding:8px;max-height:200px;overflow-y:auto"><div id="toolCallsLog"><p class="hint-text">Agent分析时将在此展示工具调用过程...</p></div></div>
           </div>
-          <div class="card">
-            <div class="card-header">
-              <span class="card-icon">📚</span>
-              <span class="card-title">RAG检索结果</span>
-            </div>
-            <div class="card-body">
-              <div class="rag-results" id="ragResults">
-                <p class="hint-text">知识库检索结果将在此展示...</p>
-              </div>
-            </div>
+          <div class="card" style="flex:0 0 auto">
+            <div class="card-header"><span class="card-icon">📚</span><span class="card-title">RAG知识检索</span></div>
+            <div class="card-body" style="padding:8px;max-height:180px;overflow-y:auto"><div id="ragContext"><p class="hint-text">知识库检索结果将在此显示...</p></div></div>
           </div>
-          <!-- 当前分析任务状态 -->
-          <div class="card" id="taskStatusCard" style="display:none">
-            <div class="card-header">
-              <span class="card-icon">⏳</span>
-              <span class="card-title">分析任务状态</span>
-            </div>
-            <div class="card-body" id="taskStatusBody"></div>
+          <div class="card" id="analysisScoreCard" style="display:none;flex:0 0 auto">
+            <div class="card-header"><span class="card-icon">⭐</span><span class="card-title">快速评分结果</span></div>
+            <div class="card-body" id="analysisScoreBody" style="padding:8px"></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== Tab: 知识图谱 ===== -->
+    <!-- ===== 知识图谱 ===== -->
     <div class="tab-panel" id="tab-knowledge">
-      <div class="knowledge-layout">
-        <div class="kg-container">
+      <div class="kg-layout">
+        <div class="kg-main">
           <div class="kg-toolbar">
-            <button class="map-btn active" id="btnKGAll">全部节点</button>
-            <button class="map-btn" id="btnKGPOI">POI类型</button>
-            <button class="map-btn" id="btnKGRoad">道路等级</button>
-            <button class="map-btn" id="btnKGDistrict">行政区</button>
+            <span class="kg-title">🕸️ 充电桩选址知识图谱</span>
+            <div class="kg-controls">
+              <button class="map-btn" onclick="loadKnowledgeGraph()">🔄 刷新</button>
+              <button class="map-btn" onclick="resetKgView()">⊙ 复位</button>
+              <select class="kg-filter" id="kgTypeFilter" onchange="filterKgByType(this.value)">
+                <option value="">全部类型</option>
+                <option value="location">地点</option>
+                <option value="poi_type">POI类型</option>
+                <option value="road">道路</option>
+                <option value="district">行政区</option>
+                <option value="factor">影响因素</option>
+                <option value="standard">规范标准</option>
+              </select>
+            </div>
           </div>
-          <div id="knowledgeGraph" class="kg-chart"></div>
+          <div id="kgChart" class="kg-chart"></div>
         </div>
         <div class="kg-info-panel">
           <div class="card">
-            <div class="card-header">
-              <span class="card-icon">🕸️</span>
-              <span class="card-title">知识图谱说明</span>
-            </div>
-            <div class="card-body">
-              <p class="kg-desc">知识图谱展示了充电桩选址相关实体及其关联关系，包括：</p>
-              <div class="kg-legend">
-                <div class="kg-node-type"><span class="kg-dot" style="background:#3b82f6"></span>POI类型节点</div>
-                <div class="kg-node-type"><span class="kg-dot" style="background:#10b981"></span>道路等级节点</div>
-                <div class="kg-node-type"><span class="kg-dot" style="background:#f59e0b"></span>行政区节点</div>
-                <div class="kg-node-type"><span class="kg-dot" style="background:#8b5cf6"></span>充电需求节点</div>
-                <div class="kg-node-type"><span class="kg-dot" style="background:#ef4444"></span>影响因素节点</div>
-              </div>
-            </div>
+            <div class="card-header"><span class="card-icon">ℹ️</span><span class="card-title">节点详情</span></div>
+            <div class="card-body" id="kgNodeDetail"><p class="hint-text">点击图谱节点查看详细信息</p></div>
           </div>
-          <div class="card" id="kgNodeDetail" style="display:none">
-            <div class="card-header">
-              <span class="card-icon">🔍</span>
-              <span class="card-title">节点详情</span>
-            </div>
-            <div class="card-body" id="kgNodeDetailBody"></div>
+          <div class="card">
+            <div class="card-header"><span class="card-icon">📊</span><span class="card-title">图谱统计</span></div>
+            <div class="card-body" id="kgStats"><p class="hint-text">加载中...</p></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== Tab: 历史记忆 ===== -->
-    <div class="tab-panel" id="tab-memory">
-      <div class="memory-layout">
-        <div class="card memory-card">
-          <div class="card-header">
-            <span class="card-icon">🧠</span>
-            <span class="card-title">长期记忆系统</span>
-            <span class="badge" id="memoryCount">0条记录</span>
-          </div>
-          <div class="card-body">
-            <div class="memory-stats" id="memoryStats"></div>
-            <div class="memory-timeline" id="memoryTimeline">
-              <div class="loading-spinner">加载历史记忆...</div>
-            </div>
-          </div>
-        </div>
-        <div class="card memory-card">
-          <div class="card-header">
-            <span class="card-icon">📍</span>
-            <span class="card-title">历史选址记录</span>
-          </div>
-          <div class="card-body">
-            <div class="location-history" id="locationHistory">
-              <div class="loading-spinner">加载选址历史...</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== Tab: 选址报告 ===== -->
+    <!-- ===== 选址报告 ===== -->
     <div class="tab-panel" id="tab-report">
       <div class="report-layout">
-        <!-- 报告列表 -->
         <div class="report-list-panel">
-          <div class="card">
-            <div class="card-header">
-              <span class="card-icon">📋</span>
-              <span class="card-title">报告列表</span>
-              <button class="btn-sm" id="btnRefreshReports">刷新</button>
-            </div>
-            <div class="card-body">
-              <div class="report-list" id="reportList">
-                <div class="loading-spinner">加载中...</div>
-              </div>
-            </div>
-          </div>
+          <div class="report-list-header"><span class="report-list-title">📄 历史报告</span><button class="btn-sm" onclick="loadReportList()">🔄 刷新</button></div>
+          <div id="reportList" class="report-list"><div class="loading-spinner"><div class="spinner"></div><span>加载中...</span></div></div>
         </div>
-
-        <!-- 报告详情 -->
-        <div class="report-detail-panel">
-          <div class="card" id="reportDetailCard">
-            <div class="card-header">
-              <span class="card-icon">📄</span>
-              <span class="card-title" id="reportTitle">选择报告查看详情</span>
-              <div class="report-actions" id="reportActions" style="display:none">
-                <button class="btn btn-primary btn-sm" id="btnDownloadPDF">⬇️ 下载PDF</button>
-              </div>
-            </div>
-            <div class="card-body" id="reportDetail">
-              <div class="report-placeholder">
-                <div class="placeholder-icon">📄</div>
-                <p>请在左侧选择报告，或在地图选点后生成新报告</p>
-              </div>
-            </div>
+        <div class="report-detail-panel" id="reportDetailPanel">
+          <div class="report-empty">
+            <div class="report-empty-icon">📄</div>
+            <div class="report-empty-text">选择左侧报告查看详情</div>
+            <div class="report-empty-sub">或在地图上选点后生成新报告</div>
+            <button class="btn btn-primary" onclick="switchTab('map')" style="margin-top:16px">🗺️ 前往地图选址</button>
           </div>
         </div>
       </div>
     </div>
 
+    <!-- ===== 历史记忆 ===== -->
+    <div class="tab-panel" id="tab-memory">
+      <div class="memory-layout">
+        <div class="memory-header-bar">
+          <span class="memory-title">🧠 历史记忆系统</span>
+          <div class="memory-actions">
+            <button class="btn-sm" onclick="loadMemory()">🔄 刷新</button>
+            <button class="btn-sm btn-danger" onclick="clearMemory()">🗑️ 清除全部</button>
+          </div>
+        </div>
+        <div class="memory-content">
+          <div class="memory-section">
+            <div class="memory-section-title"><span>💬 对话历史</span><span class="badge" id="convCount">0</span></div>
+            <div id="conversationMemory" class="memory-list"><p class="hint-text">暂无对话记录</p></div>
+          </div>
+          <div class="memory-section">
+            <div class="memory-section-title"><span>📍 选址记录</span><span class="badge" id="locCount">0</span></div>
+            <div id="locationMemory" class="memory-list"><p class="hint-text">暂无选址记录</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
 
-  <!-- ========== 全局Loading遮罩 ========== -->
-  <div class="loading-overlay" id="loadingOverlay" style="display:none">
-    <div class="loading-box">
-      <div class="loading-spinner-large"></div>
-      <p id="loadingText">AI正在分析中...</p>
-      <div class="loading-steps" id="loadingSteps"></div>
-    </div>
+  <div class="global-loading" id="globalLoading" style="display:none">
+    <div class="loading-content"><div class="loading-ring"></div><div class="loading-text" id="loadingText">处理中...</div></div>
   </div>
-
-  <!-- ========== Toast通知 ========== -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="{% static 'js/app.js' %}?v=20260318n"></script>
+  <script src="{% static 'js/app.js' %}"></script>
 </body>
 </html>

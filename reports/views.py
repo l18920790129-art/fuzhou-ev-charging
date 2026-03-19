@@ -219,5 +219,12 @@ def download_pdf(request, report_id):
 def report_list(request):
     session_id = request.GET.get("session_id","")
     qs = SelectionReport.objects.all().order_by("-created_at")
-    if session_id: qs = qs.filter(session_id=session_id)
+    # 如果有session_id，优先显示该session的报告，但也显示所有报告（不严格过滤）
+    # 这样用户能看到所有历史报告
+    if session_id:
+        # 先查该session的报告
+        session_reports = qs.filter(session_id=session_id)
+        if session_reports.exists():
+            qs = session_reports
+        # 如果该session没有报告，返回所有报告
     return JsonResponse({"data":[{"report_id":r.report_id,"title":r.title,"total_score":r.total_score,"created_at":r.created_at.isoformat()} for r in qs[:20]]})

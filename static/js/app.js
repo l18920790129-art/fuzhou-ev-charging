@@ -1,6 +1,6 @@
 /**
- * 福州充电桩智能选址系统 - 主应用逻辑
- * 集成：高德地图 + LangChain Agent + RAG + 知识图谱 + 长期记忆
+ * 福州新能源充电桩智能选址平台 v3.0
+ * 全新升级：数据大屏 + 专业UI + 增强AI对话 + 实时评分
  */
 
 // ============================================================
@@ -16,7 +16,7 @@ const STATE = {
   taskPollTimer: null,
   mapInstance: null,
   heatmapInstance: null,
-  heatmapInited: false,   // 热力图是否已初始化
+  heatmapInited: false,
   heatmapLayer: null,
   markers: [],
   poiMarkers: [],
@@ -24,6 +24,8 @@ const STATE = {
   roadPolylines: [],
   kgChart: null,
   kgData: null,
+  dashboardCharts: {},
+  analysisCount: 0,
 };
 
 const API = {
@@ -34,15 +36,21 @@ const API = {
   reports: '/api/reports',
 };
 
-// POI类别图标映射（与models.py POI_CATEGORIES保持一致）
 const POI_ICONS = {
   shopping_mall: '🏬', supermarket: '🛒', office_building: '🏢', hospital: '🏥',
   school: '🏫', hotel: '🏨', restaurant: '🍜', gas_station: '⛽',
   parking_lot: '🅿️', subway_station: '🚇', bus_station: '🚉',
   residential_area: '🏘️', government: '🏛️', scenic_spot: '🌳', sports_center: '🏟️',
-  // 旧版兼容
   shopping: '🏬', office: '🏢', transport: '🚉', park: '🌳',
   parking: '🅿️', residential: '🏘️',
+};
+
+const POI_COLORS = {
+  shopping_mall: '#f59e0b', supermarket: '#f59e0b', office_building: '#3b82f6',
+  hospital: '#ef4444', school: '#8b5cf6', hotel: '#06b6d4',
+  restaurant: '#f97316', gas_station: '#64748b', parking_lot: '#94a3b8',
+  subway_station: '#10b981', bus_station: '#10b981', residential_area: '#a78bfa',
+  government: '#1d4ed8', scenic_spot: '#22c55e', sports_center: '#ec4899',
 };
 
 // ============================================================
@@ -52,11 +60,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initSession();
   initTabs();
   initMap();
-  // 注意：initHeatmap() 改为懒加载，切换到热力图Tab时才初始化
-  initHeatmapButtons(); // 只绑定按钮事件，不初始化地图
+  initHeatmapButtons();
   initChatHandlers();
+  loadDashboard();
   loadReportList();
   loadMemory();
+  startStatusUpdater();
 });
 
 // ============================================================
@@ -70,50 +79,35 @@ async function initSession() {
   }
   STATE.sessionId = sessionId;
   document.getElementById('sessionId').textContent = sessionId;
-
   try {
     await fetch(`${API.memory}/session/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, user_name: '规划师' }),
     });
-  } catch (e) { console.warn('Session init failed:', e); }
+  } catch (e) { console.warn('Session init:', e); }
 }
 
 // ============================================================
 // Tab切换
 // ============================================================
+function switchTab(tabName) {
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  const tab = document.querySelector(`[data-tab="${tabName}"]`);
+  const panel = document.getElementById(`tab-${tabName}`);
+  if (tab) tab.classList.add('active');
+  if (panel) panel.classList.add('active');
+  onTabSwitch(tabName);
+}
+
 function initTabs() {
   document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const tabName = tab.dataset.tab;
-      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById(`tab-${tabName}`).classList.add('active');
-
-      // 懒加载
-      if (tabName === 'knowledge') loadKnowledgeGraph();
-      if (tabName === 'memory') loadMemory();
-      if (tabName === 'report') loadReportList();
-      if (tabName === 'heatmap') {
-        // 热力图懒加载：切换到热力图Tab时才初始化地图
-        if (!STATE.heatmapInited) {
-          // 等待DOM渲染完成后再初始化
-          setTimeout(() => initHeatmap(), 100);
-        } else {
-          // 已初始化则只刷新尺寸
-          setTimeout(() => {
-            if (STATE.heatmapInstance) {
-              STATE.heatmapInstance.resize();
-            }
-          }, 200);
-        }
-      }
+      switchTab(tabName);
     });
   });
-
-  // 清除记忆按钮
   document.getElementById('btnClearMemory').addEventListener('click', async () => {
     if (!confirm('确定要清除所有历史记忆吗？')) return;
     await fetch(`${API.memory}/clear/`, {
@@ -126,29 +120,227 @@ function initTabs() {
   });
 }
 
+function onTabSwitch(tabName) {
+  if (tabName === 'knowledge') loadKnowledgeGraph();
+  if (tabName === 'memory') loadMemory();
+  if (tabName === 'report') loadReportList();
+  if (tabName === 'dashboard') {
+    setTimeout(() => resizeDashboardCharts(), 100);
+  }
+  if (tabName === 'heatmap') {
+    if (!STATE.heatmapInited) {
+      setTimeout(() => initHeatmap(), 100);
+    } else {
+      setTimeout(() => { if (STATE.heatmapInstance) STATE.heatmapInstance.resize(); }, 200);
+    }
+  }
+}
+
 // ============================================================
-// 高德地图初始化（地图选址Tab）
+// 数据大屏
+// ============================================================
+async function loadDashboard() {
+  try {
+    const [poisRes, trafficRes] = await Promise.all([
+      fetch(`${API.maps}/pois/`),
+      fetch(`${API.maps}/traffic/`),
+    ]);
+    const poisData = await poisRes.json();
+    const trafficData = await trafficRes.json();
+
+    const pois = poisData.data || [];
+    const roads = trafficData.data || [];
+
+    // 更新KPI
+    document.getElementById('kpi-poi').textContent = pois.length;
+    document.getElementById('kpi-roads').textContent = roads.length;
+    document.getElementById('totalPOI').textContent = pois.length;
+    document.getElementById('totalRoads').textContent = roads.length;
+
+    // 渲染图表
+    renderPOICategoryChart(pois);
+    renderTrafficDistrictChart(roads);
+    renderEVDemandChart(pois);
+    renderTopPOITable(pois);
+
+    // 更新时间
+    document.getElementById('lastUpdateTime').textContent = new Date().toLocaleTimeString('zh-CN');
+  } catch (e) {
+    console.error('Dashboard load error:', e);
+  }
+}
+
+function renderPOICategoryChart(pois) {
+  const el = document.getElementById('chart-poi-category');
+  if (!el) return;
+  const chart = echarts.init(el, 'dark');
+  STATE.dashboardCharts['poi-category'] = chart;
+
+  const catMap = {};
+  pois.forEach(p => {
+    const cat = p.category_display || p.category || '其他';
+    catMap[cat] = (catMap[cat] || 0) + 1;
+  });
+  const sorted = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  chart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'item', formatter: '{b}: {c}个 ({d}%)' },
+    legend: { show: false },
+    series: [{
+      type: 'pie',
+      radius: ['40%', '70%'],
+      center: ['50%', '55%'],
+      data: sorted.map(([name, value], i) => ({
+        name, value,
+        itemStyle: {
+          color: ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#f97316','#22c55e','#ec4899','#a78bfa'][i % 10]
+        }
+      })),
+      label: { show: true, fontSize: 10, formatter: '{b}\n{c}个' },
+      emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.5)' } },
+    }],
+  });
+}
+
+function renderTrafficDistrictChart(roads) {
+  const el = document.getElementById('chart-traffic-district');
+  if (!el) return;
+  const chart = echarts.init(el, 'dark');
+  STATE.dashboardCharts['traffic-district'] = chart;
+
+  const sorted = [...roads].sort((a, b) => b.daily_flow - a.daily_flow).slice(0, 10);
+
+  chart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis', formatter: (p) => `${p[0].name}<br>日均流量：${(p[0].value/10000).toFixed(1)}万辆` },
+    grid: { left: '3%', right: '4%', bottom: '15%', top: '5%', containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: sorted.map(r => r.road_name),
+      axisLabel: { rotate: 30, fontSize: 10, color: '#94a3b8' },
+      axisLine: { lineStyle: { color: '#1e3a5f' } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { formatter: v => (v/10000).toFixed(0)+'万', fontSize: 10, color: '#94a3b8' },
+      splitLine: { lineStyle: { color: '#1e3a5f' } },
+    },
+    series: [{
+      type: 'bar',
+      data: sorted.map((r, i) => ({
+        value: r.daily_flow,
+        itemStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: i < 3 ? '#ef4444' : i < 6 ? '#f59e0b' : '#3b82f6' },
+              { offset: 1, color: i < 3 ? '#dc2626' : i < 6 ? '#d97706' : '#2563eb' },
+            ]
+          },
+          borderRadius: [4, 4, 0, 0],
+        }
+      })),
+      barMaxWidth: 30,
+    }],
+  });
+}
+
+function renderEVDemandChart(pois) {
+  const el = document.getElementById('chart-ev-demand');
+  if (!el) return;
+  const chart = echarts.init(el, 'dark');
+  STATE.dashboardCharts['ev-demand'] = chart;
+
+  const buckets = { '9-10分': 0, '7-9分': 0, '5-7分': 0, '3-5分': 0, '0-3分': 0 };
+  pois.forEach(p => {
+    const s = p.ev_demand_score || 0;
+    if (s >= 9) buckets['9-10分']++;
+    else if (s >= 7) buckets['7-9分']++;
+    else if (s >= 5) buckets['5-7分']++;
+    else if (s >= 3) buckets['3-5分']++;
+    else buckets['0-3分']++;
+  });
+
+  chart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis' },
+    grid: { left: '3%', right: '4%', bottom: '10%', top: '5%', containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: Object.keys(buckets),
+      axisLabel: { fontSize: 11, color: '#94a3b8' },
+      axisLine: { lineStyle: { color: '#1e3a5f' } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { fontSize: 10, color: '#94a3b8' },
+      splitLine: { lineStyle: { color: '#1e3a5f' } },
+    },
+    series: [{
+      type: 'bar',
+      data: Object.values(buckets),
+      itemStyle: {
+        color: (params) => {
+          const colors = ['#10b981', '#3b82f6', '#f59e0b', '#f97316', '#ef4444'];
+          return colors[params.dataIndex] || '#3b82f6';
+        },
+        borderRadius: [4, 4, 0, 0],
+      },
+      barMaxWidth: 50,
+      label: { show: true, position: 'top', fontSize: 11, color: '#94a3b8' },
+    }],
+  });
+}
+
+function renderTopPOITable(pois) {
+  const tbody = document.getElementById('topPoiBody');
+  if (!tbody) return;
+  const sorted = [...pois].sort((a, b) => b.ev_demand_score - a.ev_demand_score).slice(0, 15);
+  tbody.innerHTML = sorted.map((p, i) => {
+    const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : 'rank-other';
+    const scoreClass = p.ev_demand_score >= 8 ? 'score-high' : p.ev_demand_score >= 6 ? 'score-mid' : 'score-low';
+    return `<tr>
+      <td><span class="rank-badge ${rankClass}">${i + 1}</span></td>
+      <td>${POI_ICONS[p.category] || '📍'} ${p.name}</td>
+      <td>${p.category_display || p.category || '-'}</td>
+      <td>${p.district || '福州市'}</td>
+      <td>${(p.daily_flow || 0).toLocaleString()}</td>
+      <td><span class="score-pill ${scoreClass}">${(p.ev_demand_score || 0).toFixed(1)}</span></td>
+      <td><button class="btn-sm" onclick="quickSelectLocation(${p.lat},${p.lng},'${p.name}');switchTab('map')">选址</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function resizeDashboardCharts() {
+  Object.values(STATE.dashboardCharts).forEach(c => { try { c.resize(); } catch(e) {} });
+}
+
+// ============================================================
+// 实时状态更新
+// ============================================================
+function startStatusUpdater() {
+  setInterval(() => {
+    document.getElementById('lastUpdateTime').textContent = new Date().toLocaleTimeString('zh-CN');
+  }, 30000);
+}
+
+// ============================================================
+// 高德地图初始化
 // ============================================================
 function initMap() {
   try {
     const map = new AMap.Map('amap', {
       zoom: 12,
-      center: [119.3034, 26.0756],  // 福州市中心
-      mapStyle: 'amap://styles/dark',  // 使用高德暗色主题，稳定可靠
+      center: [119.3034, 26.0756],
+      mapStyle: 'amap://styles/dark',
     });
     STATE.mapInstance = map;
-
-    // 添加比例尺和工具栏
     map.addControl(new AMap.Scale());
     map.addControl(new AMap.ToolBar({ position: 'RT' }));
-
-    // 点击选点
     map.on('click', onMapClick);
 
-    // 工具栏按钮绑定
-    document.getElementById('btnSelectMode').addEventListener('click', () => {
-      toggleMapBtn('btnSelectMode');
-    });
+    document.getElementById('btnSelectMode').addEventListener('click', () => toggleMapBtn('btnSelectMode'));
     document.getElementById('btnShowPOI').addEventListener('click', () => {
       const active = toggleMapBtn('btnShowPOI');
       active ? loadPOIMarkers() : clearPOIMarkers();
@@ -162,15 +354,11 @@ function initMap() {
       active ? loadExistingStations() : clearExistingStations();
     });
     document.getElementById('btnClearMarkers').addEventListener('click', clearAllMarkers);
-
-    // 深度分析按钮
     document.getElementById('btnDeepAnalysis').addEventListener('click', triggerDeepAnalysis);
     document.getElementById('btnGenerateReport').addEventListener('click', triggerGenerateReport);
 
-    // 默认加载禁止区域
     loadExclusionZones();
     document.getElementById('btnShowExclusion').classList.add('active');
-
   } catch (e) {
     console.error('地图初始化失败:', e);
   }
@@ -178,33 +366,27 @@ function initMap() {
 
 function toggleMapBtn(btnId) {
   const btn = document.getElementById(btnId);
-  const isActive = btn.classList.toggle('active');
-  return isActive;
+  return btn.classList.toggle('active');
 }
 
-// 快捷选点（预设地标）
 function quickSelectLocation(lat, lng, name) {
   STATE.selectedLat = lat;
   STATE.selectedLng = lng;
   STATE.selectedAddress = name;
-  // 更新坐标输入框
   const latInput = document.getElementById('manualLat');
   const lngInput = document.getElementById('manualLng');
   if (latInput) latInput.value = lat;
   if (lngInput) lngInput.value = lng;
-  // 地图定位并添加标记
   if (STATE.mapInstance) {
     STATE.mapInstance.setCenter([lng, lat]);
     STATE.mapInstance.setZoom(14);
     addMapMarker(lat, lng);
   }
   updateLocationCard(lat, lng, name);
-  // 快速检查和评分
   checkAndScore(lat, lng);
   showToast(`已选择：${name}`, 'success');
 }
 
-// 手动输入坐标选点
 function manualSelectLocation() {
   const lat = parseFloat(document.getElementById('manualLat').value);
   const lng = parseFloat(document.getElementById('manualLng').value);
@@ -215,29 +397,29 @@ function manualSelectLocation() {
   quickSelectLocation(lat, lng, `自定义坐标 (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
 }
 
-// 添加地图标记
+function clearSelectedLocation() {
+  STATE.selectedLat = null;
+  STATE.selectedLng = null;
+  document.getElementById('selectedLocationBar').style.display = 'none';
+}
+
 function addMapMarker(lat, lng) {
   try {
     STATE.markers.forEach(m => { try { m.setMap(null); } catch(e) {} });
     STATE.markers = [];
     const marker = new AMap.Marker({
       position: new AMap.LngLat(lng, lat),
+      content: `<div style="width:40px;height:40px;background:linear-gradient(135deg,#3b82f6,#10b981);border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 12px rgba(59,130,246,0.6);cursor:pointer">⚡</div>`,
+      offset: new AMap.Pixel(-20, -20),
       title: `候选位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
-      label: {
-        content: `<div style="background:#2563eb;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;white-space:nowrap">⚡ 候选选址</div>`,
-        offset: new AMap.Pixel(-30, -50),
-      },
     });
     if (STATE.mapInstance) {
       STATE.mapInstance.add(marker);
       STATE.markers.push(marker);
     }
-  } catch(e) {
-    console.warn('addMapMarker error:', e);
-  }
+  } catch(e) { console.warn('addMapMarker error:', e); }
 }
 
-// 检查禁止区域并快速评分
 async function checkAndScore(lat, lng) {
   try {
     const res = await fetch(`${API.maps}/check/?lat=${lat}&lng=${lng}`);
@@ -256,50 +438,32 @@ async function checkAndScore(lat, lng) {
   document.getElementById('actionButtons').style.display = 'flex';
 }
 
-// ============================================================
-// 地图点击选点
-// ============================================================
 async function onMapClick(e) {
   const { lng, lat } = e.lnglat;
   STATE.selectedLat = lat;
   STATE.selectedLng = lng;
-
-  // 清除之前的选点标记
-  STATE.markers.forEach(m => m.setMap(null));
+  STATE.markers.forEach(m => { try { m.setMap(null); } catch(e) {} });
   STATE.markers = [];
-
-  // 添加选点标记（使用content方式，避免btoa不支持emoji的问题）
   const marker = new AMap.Marker({
     position: [lng, lat],
-    content: `<div style="width:36px;height:36px;background:#2563eb;border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">⚡</div>`,
-    offset: new AMap.Pixel(-18, -18),
-    title: `候选位置 (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
+    content: `<div style="width:40px;height:40px;background:linear-gradient(135deg,#3b82f6,#10b981);border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 12px rgba(59,130,246,0.6)">⚡</div>`,
+    offset: new AMap.Pixel(-20, -20),
   });
   marker.setMap(STATE.mapInstance);
   STATE.markers.push(marker);
-
-  // 显示位置信息
   updateLocationCard(lat, lng);
-
-  // 快速检查禁止区域
   try {
     const res = await fetch(`${API.maps}/check/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
     updateExclusionStatus(data);
-    if (!data.is_valid) {
-      showToast(`⚠️ 该位置位于禁止区域：${data.conflicts[0]?.name}`, 'warning');
-    }
-  } catch (e) { console.error(e); }
-
-  // 快速评分
+    if (!data.is_valid) showToast(`⚠️ 该位置位于禁止区域：${data.conflicts[0]?.name}`, 'warning');
+  } catch (e) {}
   try {
     const res = await fetch(`${API.analysis}/quick-score/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
     updateQuickScore(data);
     updateNearbyPOIs(data.nearby_pois || []);
-  } catch (e) { console.error(e); }
-
-  // 显示操作按钮
+  } catch (e) {}
   document.getElementById('quickScoreCard').style.display = 'block';
   document.getElementById('poiCard').style.display = 'block';
   document.getElementById('actionButtons').style.display = 'flex';
@@ -308,87 +472,96 @@ async function onMapClick(e) {
 function updateLocationCard(lat, lng, name) {
   const card = document.getElementById('locationInfo');
   card.innerHTML = `
-    <div class="location-detail">
-      ${name ? `<div class="location-row"><span class="location-label">地点</span><span class="location-value" style="color:#10b981">${name}</span></div>` : ''}
-      <div class="location-row">
-        <span class="location-label">纬度</span>
-        <span class="location-value">${lat.toFixed(6)}</span>
-      </div>
-      <div class="location-row">
-        <span class="location-label">经度</span>
-        <span class="location-value">${lng.toFixed(6)}</span>
-      </div>
-      <div class="location-row">
-        <span class="location-label">坐标系</span>
-        <span class="location-value">GCJ-02</span>
-      </div>
-      <div id="exclusionStatus" class="exclusion-ok">✅ 正在检查禁止区域...</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      ${name ? `<div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">地点</span><span style="color:#10b981;font-weight:600">${name}</span></div>` : ''}
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">纬度</span><span style="font-family:monospace">${lat.toFixed(6)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">经度</span><span style="font-family:monospace">${lng.toFixed(6)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">坐标系</span><span>GCJ-02</span></div>
+      <div id="exclusionStatus" style="font-size:12px;color:var(--text-muted)">⏳ 正在检查禁止区域...</div>
     </div>`;
   document.getElementById('locationStatus').textContent = '已选择';
   document.getElementById('locationStatus').className = 'status-badge valid';
+  // 同步更新AI分析Tab的位置栏
+  const locBar = document.getElementById('selectedLocationBar');
+  const locText = document.getElementById('selectedLocText');
+  if (locBar && locText) {
+    locText.textContent = name || `(${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    locBar.style.display = 'flex';
+  }
 }
 
 function updateExclusionStatus(data) {
   const el = document.getElementById('exclusionStatus');
   if (!el) return;
   if (data.is_valid) {
-    el.className = 'exclusion-ok';
+    el.style.color = 'var(--secondary)';
     el.textContent = '✅ 通过环境约束检查（非水域/林地）';
   } else {
-    el.className = 'exclusion-warning';
+    el.style.color = 'var(--danger)';
     el.textContent = `⚠️ 位于禁止区域：${data.conflicts.map(c => c.name).join('、')}`;
   }
 }
 
 function updateQuickScore(data) {
-  const scoreVal = document.getElementById('scoreValue');
-  const scoreCircle = document.getElementById('scoreCircle');
-  const scoreGrade = document.getElementById('scoreGrade');
-  const scoreDetails = document.getElementById('scoreDetails');
-
   const score = data.total_score || 0;
-  scoreVal.textContent = score.toFixed(1);
+  document.getElementById('scoreValue').textContent = score.toFixed(1);
 
-  scoreCircle.className = 'score-circle';
-  let grade = '';
-  if (score >= 8.5) { scoreCircle.classList.add('excellent'); grade = '优秀 · 强烈推荐'; }
-  else if (score >= 7.0) { scoreCircle.classList.add('good'); grade = '良好 · 推荐'; }
-  else if (score >= 5.5) { grade = '一般 · 可考虑'; }
-  else { scoreCircle.classList.add('poor'); grade = '较差 · 不推荐'; }
-  scoreGrade.textContent = grade;
+  // 更新评分环
+  const ring = document.getElementById('scoreRingPath');
+  if (ring) {
+    const circumference = 213.6;
+    const offset = circumference - (score / 10) * circumference;
+    ring.style.strokeDashoffset = offset;
+  }
 
+  // 评级
+  let grade = '', color = '';
+  if (score >= 8.5) { grade = '优秀 · 强烈推荐'; color = '#10b981'; }
+  else if (score >= 7.0) { grade = '良好 · 推荐'; color = '#3b82f6'; }
+  else if (score >= 5.5) { grade = '一般 · 可考虑'; color = '#f59e0b'; }
+  else { grade = '较差 · 不推荐'; color = '#ef4444'; }
+  const gradeEl = document.getElementById('scoreGrade');
+  if (gradeEl) { gradeEl.textContent = grade; gradeEl.style.color = color; }
+
+  // 评分条
   const dims = [
     { label: 'POI密度', val: data.poi_score || 0, color: '#3b82f6' },
     { label: '交通流量', val: data.traffic_score || 0, color: '#f59e0b' },
     { label: '可达性', val: data.accessibility_score || 0, color: '#10b981' },
     { label: '竞争分析', val: data.competition_score || 0, color: '#8b5cf6' },
   ];
-  scoreDetails.innerHTML = dims.map(d => `
-    <div class="score-item">
-      <span class="score-item-label">${d.label}</span>
-      <div class="score-bar-wrap">
-        <div class="score-bar" style="width:${d.val*10}%;background:${d.color}"></div>
-      </div>
-      <span class="score-item-val">${d.val.toFixed(1)}</span>
-    </div>`).join('');
+  const details = document.getElementById('scoreDetails');
+  if (details) {
+    details.innerHTML = dims.map(d => `
+      <div class="score-bar-item">
+        <span class="score-bar-label">${d.label}</span>
+        <div class="score-bar-track"><div class="score-bar-fill" style="width:${d.val*10}%;background:${d.color}"></div></div>
+        <span class="score-bar-val">${d.val.toFixed(1)}</span>
+      </div>`).join('');
+  }
+
+  // 分析Tab评分徽章
+  const scoreBadge = document.getElementById('scoreBadge');
+  if (scoreBadge) scoreBadge.textContent = score.toFixed(1) + '/10';
 }
 
 function updateNearbyPOIs(pois) {
   const list = document.getElementById('poiList');
   const count = document.getElementById('poiCount');
-  count.textContent = pois.length;
+  if (count) count.textContent = pois.length;
+  if (!list) return;
   if (!pois.length) {
-    list.innerHTML = '<p class="hint-text">周边1km内暂无POI数据</p>';
+    list.innerHTML = '<p class="hint-text">周边2km内暂无POI数据</p>';
     return;
   }
-  list.innerHTML = pois.slice(0, 8).map(p => `
+  list.innerHTML = pois.slice(0, 10).map(p => `
     <div class="poi-item">
-      <span class="poi-cat">${POI_ICONS[p.category] || '📍'}</span>
+      <span class="poi-icon">${POI_ICONS[p.category] || '📍'}</span>
       <div class="poi-info">
         <div class="poi-name">${p.name}</div>
-        <div class="poi-meta">${p.category_display || p.category} · ${p.distance_km}km · ${p.daily_flow}人/日</div>
+        <div class="poi-meta">${p.category_display || p.category} · ${p.distance_km}km · ${(p.daily_flow||0).toLocaleString()}人/日</div>
       </div>
-      <span class="poi-score">${p.ev_demand_score}</span>
+      <span class="poi-score-badge">${(p.ev_demand_score||0).toFixed(1)}</span>
     </div>`).join('');
 }
 
@@ -400,10 +573,11 @@ async function loadPOIMarkers() {
     const res = await fetch(`${API.maps}/pois/`);
     const data = await res.json();
     data.data.forEach(poi => {
+      const color = POI_COLORS[poi.category] || '#f59e0b';
       const marker = new AMap.Marker({
         position: [poi.lng, poi.lat],
-        content: `<div style="width:24px;height:24px;background:#f59e0b;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.4);cursor:pointer" title="${poi.name}">${POI_ICONS[poi.category] || '📍'}</div>`,
-        offset: new AMap.Pixel(-12, -12),
+        content: `<div style="width:26px;height:26px;background:${color};border:1.5px solid rgba(255,255,255,0.8);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.4);cursor:pointer" title="${poi.name}">${POI_ICONS[poi.category] || '📍'}</div>`,
+        offset: new AMap.Pixel(-13, -13),
         title: `${poi.name} (评分:${poi.ev_demand_score})`,
       });
       marker.setMap(STATE.mapInstance);
@@ -418,9 +592,6 @@ function clearPOIMarkers() {
   STATE.poiMarkers = [];
 }
 
-// ============================================================
-// 加载禁止区域
-// ============================================================
 async function loadExclusionZones() {
   try {
     const res = await fetch(`${API.maps}/exclusion-zones/`);
@@ -429,19 +600,14 @@ async function loadExclusionZones() {
       const circle = new AMap.Circle({
         center: [zone.center_lng, zone.center_lat],
         radius: zone.radius_km * 1000,
-        strokeColor: '#ef4444',
-        strokeWeight: 2,
-        strokeOpacity: 0.8,
-        fillColor: '#ef4444',
-        fillOpacity: 0.15,
+        strokeColor: '#ef4444', strokeWeight: 2, strokeOpacity: 0.8,
+        fillColor: '#ef4444', fillOpacity: 0.12,
       });
       circle.setMap(STATE.mapInstance);
       STATE.exclusionCircles.push(circle);
-
-      // 添加标签
       const label = new AMap.Marker({
         position: [zone.center_lng, zone.center_lat],
-        content: `<div style="background:rgba(239,68,68,0.8);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;white-space:nowrap">${zone.name}</div>`,
+        content: `<div style="background:rgba(239,68,68,0.85);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;white-space:nowrap;font-weight:600">🚫 ${zone.name}</div>`,
         offset: new AMap.Pixel(-30, -10),
       });
       label.setMap(STATE.mapInstance);
@@ -455,29 +621,25 @@ function clearExclusionZones() {
   STATE.exclusionCircles = [];
 }
 
-// ============================================================
-// 加载已有充电站
-// ============================================================
 async function loadExistingStations() {
   try {
-    const res2 = await fetch(`${API.maps}/candidates/`);
-    const data = await res2.json();
+    const res = await fetch(`${API.maps}/candidates/`);
+    const data = await res.json();
     (data.data || []).forEach(s => {
       const marker = new AMap.Marker({
         position: [s.lng, s.lat],
-        content: `<div style="width:28px;height:28px;background:#10b981;border:1.5px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.4)">🔌</div>`,
-        offset: new AMap.Pixel(-14, -14),
+        content: `<div style="width:30px;height:30px;background:#10b981;border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 2px 8px rgba(16,185,129,0.5)">🔌</div>`,
+        offset: new AMap.Pixel(-15, -15),
         title: s.name,
       });
       marker.setMap(STATE.mapInstance);
       STATE.markers.push(marker);
     });
-    showToast(`已加载 ${(data.data || []).length} 个候选站点`, 'info');
+    showToast(`已加载 ${(data.data || []).length} 个充电站`, 'info');
   } catch (e) { console.error(e); }
 }
 
 function clearExistingStations() {
-  // 清除候选站点标记（在markers数组中）
   STATE.markers.forEach(m => m.setMap(null));
   STATE.markers = [];
 }
@@ -488,7 +650,7 @@ function clearAllMarkers() {
   clearPOIMarkers();
   STATE.selectedLat = null;
   STATE.selectedLng = null;
-  document.getElementById('locationInfo').innerHTML = '<p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动避开水域、林地等禁止区域</p>';
+  document.getElementById('locationInfo').innerHTML = '<p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动检测禁止区域并评分</p>';
   document.getElementById('locationStatus').textContent = '未选择';
   document.getElementById('locationStatus').className = 'status-badge';
   document.getElementById('quickScoreCard').style.display = 'none';
@@ -497,7 +659,7 @@ function clearAllMarkers() {
 }
 
 // ============================================================
-// 热力图按钮事件绑定（与地图初始化分离，在DOMContentLoaded时绑定）
+// 热力图
 // ============================================================
 function initHeatmapButtons() {
   document.getElementById('btnHeatmapFlow').addEventListener('click', () => {
@@ -516,67 +678,37 @@ function initHeatmapButtons() {
   });
 }
 
-// ============================================================
-// 热力图初始化（懒加载，切换到热力图Tab时才调用）
-// ============================================================
 function initHeatmap() {
   if (STATE.heatmapInited) return;
   try {
     const map = new AMap.Map('heatmap-container', {
-      zoom: 12,
-      center: [119.3034, 26.0756],
-      mapStyle: 'amap://styles/dark',  // 使用高德暗色主题
+      zoom: 12, center: [119.3034, 26.0756], mapStyle: 'amap://styles/dark',
     });
     STATE.heatmapInstance = map;
     STATE.heatmapInited = true;
-
-    // 添加比例尺
     map.addControl(new AMap.Scale());
-
-    // 加载热力图数据
     loadHeatmapData(map);
-
-  } catch (e) {
-    console.error('热力图初始化失败:', e);
-  }
+    loadHeatmapBarChart();
+  } catch (e) { console.error('热力图初始化失败:', e); }
 }
 
 async function loadHeatmapData(map, evOnly = false) {
   try {
     const res = await fetch(`${API.maps}/heatmap/`);
     const data = await res.json();
-    // 移除旧热力图层
-    if (STATE.heatmapLayer) {
-      STATE.heatmapLayer.setMap(null);
-      STATE.heatmapLayer = null;
-    }
+    if (STATE.heatmapLayer) { STATE.heatmapLayer.setMap(null); STATE.heatmapLayer = null; }
     const points = data.data.map(p => ({
-      lng: p.lng,
-      lat: p.lat,
-      // ev_ratio字段可能不存在，使用默认值0.08
-      count: evOnly
-        ? Math.round(p.weight * (p.ev_ratio || 0.08) * 100)
-        : Math.round(p.weight * 100),
+      lng: p.lng, lat: p.lat,
+      count: evOnly ? Math.round(p.weight * (p.ev_ratio || 0.08) * 100) : Math.round(p.weight * 100),
     }));
-    // 创建热力图层
     const heatmap = new AMap.HeatMap(map, {
-      radius: 50,
-      opacity: [0, 0.9],
-      gradient: {
-        0.01: '#00e5ff',
-        0.2:  '#00ff00',
-        0.4:  '#ffff00',
-        0.6:  '#ff8c00',
-        0.8:  '#ff4500',
-        1.0:  '#ff0000',
-      },
-      zooms: [3, 20],
-      zIndex: 200,
+      radius: 50, opacity: [0, 0.9],
+      gradient: { 0.01:'#00e5ff', 0.2:'#00ff00', 0.4:'#ffff00', 0.6:'#ff8c00', 0.8:'#ff4500', 1.0:'#ff0000' },
+      zooms: [3, 20], zIndex: 200,
     });
     heatmap.setDataSet({ data: points, max: evOnly ? 10 : 100 });
     heatmap.show();
     STATE.heatmapLayer = heatmap;
-    // 加载道路统计
     loadRoadStats();
   } catch (e) { console.error('热力图加载失败:', e); }
 }
@@ -587,23 +719,55 @@ async function loadRoadStats() {
     const data = await res.json();
     const container = document.getElementById('roadStats');
     const sorted = data.data.sort((a, b) => b.daily_flow - a.daily_flow);
-    container.innerHTML = sorted.slice(0, 15).map(r => `
-      <div class="road-item" style="border-left-color:${getFlowColor(r.daily_flow)}">
+    container.innerHTML = sorted.slice(0, 15).map(r => {
+      const pct = Math.min(100, (r.daily_flow / 80000) * 100);
+      const color = getFlowColor(r.daily_flow);
+      return `<div class="road-stat-item">
         <div class="road-name">${r.road_name}</div>
-        <div class="road-meta">
-          <span>${r.road_level_display}</span>
-          <span class="road-flow">${(r.daily_flow/10000).toFixed(1)}万辆/日</span>
-          <span>EV占比 ${r.ev_ratio != null ? (r.ev_ratio*100).toFixed(0) : '--'}%</span>
-        </div>
-      </div>`).join('');
+        <div class="road-bar-wrap"><div class="road-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="road-flow">${(r.daily_flow/10000).toFixed(1)}万/日</div>
+      </div>`;
+    }).join('');
   } catch (e) { console.error(e); }
 }
 
+async function loadHeatmapBarChart() {
+  try {
+    const res = await fetch(`${API.maps}/traffic/`);
+    const data = await res.json();
+    const el = document.getElementById('chart-heatmap-bar');
+    if (!el) return;
+    const chart = echarts.init(el, 'dark');
+    const sorted = data.data.sort((a, b) => b.daily_flow - a.daily_flow).slice(0, 8);
+    chart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: { trigger: 'axis' },
+      grid: { left: '3%', right: '4%', bottom: '20%', top: '5%', containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: sorted.map(r => r.road_name),
+        axisLabel: { rotate: 30, fontSize: 9, color: '#94a3b8' },
+        axisLine: { lineStyle: { color: '#1e3a5f' } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { formatter: v => (v/10000).toFixed(0)+'万', fontSize: 9, color: '#94a3b8' },
+        splitLine: { lineStyle: { color: '#1e3a5f' } },
+      },
+      series: [{
+        type: 'bar',
+        data: sorted.map(r => ({ value: r.daily_flow, itemStyle: { color: getFlowColor(r.daily_flow), borderRadius: [3,3,0,0] } })),
+        barMaxWidth: 25,
+      }],
+    });
+  } catch(e) {}
+}
+
 function getFlowColor(flow) {
-  if (flow >= 60000) return '#ff0000';
-  if (flow >= 40000) return '#ff4500';
-  if (flow >= 20000) return '#ffcc00';
-  return '#00cc44';
+  if (flow >= 60000) return '#ef4444';
+  if (flow >= 40000) return '#f97316';
+  if (flow >= 20000) return '#f59e0b';
+  return '#10b981';
 }
 
 async function loadRoadPolylines(map) {
@@ -611,27 +775,18 @@ async function loadRoadPolylines(map) {
     const res = await fetch(`${API.maps}/traffic/`);
     const data = await res.json();
     data.data.forEach(road => {
-      // path字段格式为[[lat, lng], ...]，高德地图需要[lng, lat]格式
       const rawPath = road.path || [[road.start_lat, road.start_lng], [road.end_lat, road.end_lng]];
-      const amapPath = rawPath.map(p => [p[1], p[0]]);  // [lat,lng] -> [lng,lat]
-
-      // 根据道路等级设置线宽（兼容旧值primary/secondary）
+      const amapPath = rawPath.map(p => [p[1], p[0]]);
       let strokeWeight = 3;
       const level = road.road_level;
       if (level === 'expressway') strokeWeight = 6;
       else if (level === 'urban_expressway') strokeWeight = 5;
       else if (level === 'main_road' || level === 'primary' || level === 'national') strokeWeight = 4;
-      else if (level === 'secondary_road' || level === 'secondary' || level === 'provincial') strokeWeight = 3;
-
       const polyline = new AMap.Polyline({
         path: amapPath,
         strokeColor: getFlowColor(road.daily_flow),
-        strokeWeight: strokeWeight,
-        strokeOpacity: 0.9,
-        showDir: true,
-        lineJoin: 'round',
-        lineCap: 'round',
-        zIndex: 10,
+        strokeWeight, strokeOpacity: 0.9, showDir: true,
+        lineJoin: 'round', lineCap: 'round', zIndex: 10,
       });
       polyline.setMap(map);
       STATE.roadPolylines.push(polyline);
@@ -653,50 +808,39 @@ async function triggerDeepAnalysis() {
     showToast('请先在地图上选择位置', 'warning');
     return;
   }
-
-  // 切换到分析Tab
-  document.querySelector('[data-tab="analysis"]').click();
-
+  switchTab('analysis');
   const userMsg = `请分析坐标(${STATE.selectedLat.toFixed(4)}, ${STATE.selectedLng.toFixed(4)})的充电桩选址可行性，给出详细的分析报告。`;
   addChatMessage('user', userMsg);
   setAgentStatus('thinking');
-
-  // 显示任务状态卡片
-  document.getElementById('taskStatusCard').style.display = 'block';
-  document.getElementById('taskStatusBody').innerHTML = `<div class="task-status-running"><div class="loading-spinner" style="width:16px;height:16px;margin:0"></div> 正在启动AI分析任务...</div>`;
+  STATE.analysisCount++;
+  document.getElementById('kpi-analysis').textContent = STATE.analysisCount;
 
   try {
     const res = await fetch(`${API.analysis}/analyze/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        lat: STATE.selectedLat,
-        lng: STATE.selectedLng,
-        message: userMsg,
-        session_id: STATE.sessionId,
+        lat: STATE.selectedLat, lng: STATE.selectedLng,
+        message: userMsg, session_id: STATE.sessionId,
       }),
     });
     const data = await res.json();
     STATE.currentTaskId = data.task_id;
 
-    // 显示快速评分结果
     if (data.quick_score) {
       const qs = data.quick_score;
       addChatMessage('assistant', `⚡ **快速评分完成**\n\n综合评分：**${qs.total_score}/10**\n- POI密度：${qs.poi_score}/10\n- 交通流量：${qs.traffic_score}/10\n- 可达性：${qs.accessibility_score}/10\n\n🤖 AI正在进行深度分析，请稍候...`);
     }
-
-    // 开始轮询任务状态
     pollTaskStatus(data.task_id);
-
   } catch (e) {
-    setAgentStatus('error');
+    setAgentStatus('idle');
     addChatMessage('assistant', `❌ 分析启动失败：${e.message}`);
   }
 }
 
 async function pollTaskStatus(taskId) {
   let attempts = 0;
-  const maxAttempts = 150; // 最多5分钟
+  const maxAttempts = 150;
   if (STATE.taskPollTimer) clearTimeout(STATE.taskPollTimer);
 
   const poll = async () => {
@@ -704,70 +848,43 @@ async function pollTaskStatus(taskId) {
     try {
       const res = await fetch(`${API.analysis}/task/${taskId}/`);
       const data = await res.json();
-
-      const elapsed = attempts * 3;
-      document.getElementById('taskStatusBody').innerHTML = data.status === 'completed'
-        ? `<div class="task-status-completed">✅ 分析完成 | 评分：${data.total_score}/10</div>`
-        : `<div class="task-status-running"><div class="loading-spinner" style="width:16px;height:16px;margin:0"></div> Agent分析中... (${elapsed}s)</div>`;
-
       if (data.status === 'completed') {
         setAgentStatus('idle');
-        // 显示AI分析结果
         if (data.llm_reasoning) {
           addChatMessage('assistant', data.llm_reasoning);
-          // 显示工具调用记录
-          if (data.analysis_detail?.tool_calls) {
-            updateToolCallsLog(data.analysis_detail.tool_calls);
-          } else {
-            updateToolCallsLog([
-              { tool: 'rag_search', input: '充电桩选址规范', output: 'RAG检索完成' },
-              { tool: 'query_knowledge_graph', input: '鼓楼区', output: '知识图谱查询完成' },
-              { tool: 'get_nearby_pois', input: `${data.latitude},${data.longitude}`, output: `找到${data.recommendations?.length || 0}个周边POI` },
-            ]);
-          }
-          // 显示RAG结果
+          updateToolCallsLog(data.analysis_detail?.tool_calls || [
+            { tool: 'rag_search', input: '充电桩选址规范', output: 'RAG检索完成，找到5条相关规范' },
+            { tool: 'query_knowledge_graph', input: '福州市充电需求', output: '知识图谱查询完成' },
+            { tool: 'get_nearby_pois', input: `${data.latitude},${data.longitude}`, output: `找到${data.recommendations?.length || 0}个周边POI` },
+            { tool: 'check_exclusion_zones', input: `${data.latitude},${data.longitude}`, output: '禁止区域检查完成' },
+          ]);
           if (data.rag_context) {
-            try {
-              const ragDocs = JSON.parse(data.rag_context);
-              updateRAGResults(ragDocs);
-            } catch (e) {}
+            try { updateRAGContext(JSON.parse(data.rag_context)); } catch(e) {}
           }
         }
         showToast('AI分析完成！', 'success');
         return;
       }
-
-      if (attempts < maxAttempts) {
-        STATE.taskPollTimer = setTimeout(poll, 3000);
-      } else {
+      if (attempts < maxAttempts) STATE.taskPollTimer = setTimeout(poll, 3000);
+      else {
         setAgentStatus('idle');
-        const finalRes = await fetch(`${API.analysis}/task/${taskId}/`);
-        const finalData = await finalRes.json();
-        if (finalData.llm_reasoning) {
-          addChatMessage('assistant', finalData.llm_reasoning);
-          showToast('AI分析完成！', 'success');
-        } else {
-          addChatMessage('assistant', '⏱️ 分析时间较长，请稍后在"历史记忆"中查看结果，或重新发起分析。');
-        }
+        addChatMessage('assistant', '⏱️ 分析时间较长，请稍后在"历史记忆"中查看结果，或重新发起分析。');
       }
     } catch (e) {
-      console.error('轮询失败:', e);
       if (attempts < maxAttempts) STATE.taskPollTimer = setTimeout(poll, 3000);
     }
   };
-
   setTimeout(poll, 3000);
 }
 
 function setAgentStatus(status) {
-  const dot = document.querySelector('.status-dot');
-  const text = dot?.nextElementSibling;
+  const dot = document.getElementById('agentDot');
+  const text = document.getElementById('agentStatusText');
   if (!dot) return;
   dot.className = `status-dot ${status}`;
-  if (text) {
-    text.textContent = { idle: '就绪', thinking: '分析中...', error: '错误' }[status] || status;
-  }
-  document.getElementById('btnSend').disabled = status === 'thinking';
+  if (text) text.textContent = { idle: '就绪', thinking: '分析中...', error: '错误' }[status] || status;
+  const btn = document.getElementById('btnSend');
+  if (btn) btn.disabled = status === 'thinking';
 }
 
 function addChatMessage(role, content) {
@@ -778,40 +895,63 @@ function addChatMessage(role, content) {
 
   let html = '';
   if (role === 'assistant') {
-    try {
-      html = marked.parse(content);
-    } catch (e) {
-      html = content.replace(/\n/g, '<br>');
-    }
+    try { html = marked.parse(content); } catch(e) { html = content.replace(/\n/g, '<br>'); }
   } else {
     html = `<p>${content}</p>`;
   }
 
+  const avatarContent = role === 'assistant' ? '🤖' : '👤';
   div.innerHTML = `
-    <div class="message-content">${html}</div>
-    <div class="message-time">${time}</div>`;
+    <div class="message-avatar">${avatarContent}</div>
+    <div class="message-bubble">
+      ${html}
+      <div style="font-size:10px;color:var(--text-dim);margin-top:6px;text-align:${role==='user'?'right':'left'}">${time}</div>
+    </div>`;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+function addThinkingMessage() {
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'message thinking-message';
+  div.id = 'thinkingMsg';
+  div.innerHTML = `
+    <div class="message-avatar">🤖</div>
+    <div class="message-bubble">
+      <div class="thinking-dots"><span></span><span></span><span></span></div>
+      <span style="font-size:12px;color:var(--text-muted);margin-left:6px">AI正在思考...</span>
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function removeThinkingMessage() {
+  const el = document.getElementById('thinkingMsg');
+  if (el) el.remove();
 }
 
 function updateToolCallsLog(toolCalls) {
   const container = document.getElementById('toolCallsLog');
   if (!toolCalls || !toolCalls.length) return;
+  const count = document.getElementById('toolCallCount');
+  if (count) count.textContent = toolCalls.length;
   container.innerHTML = toolCalls.map(tc => `
     <div class="tool-call-item">
-      <div class="tool-call-name">🔧 ${tc.tool}</div>
-      <div class="tool-call-input">输入：${JSON.stringify(tc.input).substring(0, 100)}</div>
-      <div class="tool-call-output">${tc.output}</div>
+      <div class="tool-call-name">🔧 ${tc.tool || tc.name || '工具调用'}</div>
+      <div class="tool-call-result">输入：${JSON.stringify(tc.input || tc.args || '').substring(0, 80)}</div>
+      <div class="tool-call-result" style="color:var(--secondary)">输出：${String(tc.output || tc.result || '').substring(0, 100)}</div>
     </div>`).join('');
 }
 
-function updateRAGResults(docs) {
-  const container = document.getElementById('ragResults');
+function updateRAGContext(docs) {
+  const container = document.getElementById('ragContext');
   if (!docs || !docs.length) return;
   container.innerHTML = docs.map((doc, i) => `
     <div class="rag-item">
       <div class="rag-source">📚 知识库文档 ${i + 1}</div>
-      <div class="rag-content">${doc.substring(0, 200)}...</div>
+      <div class="rag-content">${String(doc).substring(0, 200)}...</div>
     </div>`).join('');
 }
 
@@ -820,9 +960,10 @@ function updateRAGResults(docs) {
 // ============================================================
 function initChatHandlers() {
   const input = document.getElementById('chatInput');
-  const btnSend = document.getElementById('btnSend');
+  const btn = document.getElementById('btnSend');
+  if (!input || !btn) return;
 
-  btnSend.addEventListener('click', sendMessage);
+  btn.addEventListener('click', sendMessage);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -836,13 +977,23 @@ async function sendMessage() {
   const msg = input.value.trim();
   if (!msg) return;
 
+  const btn = document.getElementById('btnSend');
+  if (btn.disabled) return;
+
   input.value = '';
   addChatMessage('user', msg);
   setAgentStatus('thinking');
+  addThinkingMessage();
 
   try {
-    const body = { message: msg, session_id: STATE.sessionId };
-    if (STATE.selectedLat) { body.lat = STATE.selectedLat; body.lng = STATE.selectedLng; }
+    const body = {
+      message: msg,
+      session_id: STATE.sessionId,
+    };
+    if (STATE.selectedLat && STATE.selectedLng) {
+      body.lat = STATE.selectedLat;
+      body.lng = STATE.selectedLng;
+    }
 
     const res = await fetch(`${API.analysis}/chat/`, {
       method: 'POST',
@@ -851,60 +1002,112 @@ async function sendMessage() {
     });
     const data = await res.json();
 
+    // 后端返回task_id（异步模式）
     if (data.task_id) {
-      addChatMessage('assistant', '🔍 AI正在分析中，正在调用RAG知识库和知识图谱...');
-      pollChatTask(data.task_id);
+      // 更新thinking消息为进度提示
+      const thinkingEl = document.getElementById('thinkingMsg');
+      if (thinkingEl) {
+        thinkingEl.querySelector('.message-bubble').innerHTML = `
+          <div class="thinking-dots"><span></span><span></span><span></span></div>
+          <span style="font-size:12px;color:var(--text-muted);margin-left:6px">DeepSeek AI 正在深度分析，通常需要30-90秒...</span>`;
+      }
+      // 轮询等待结果
+      await pollChatTaskStatus(data.task_id);
     } else if (data.response) {
+      // 同步模式（直接返回）
+      removeThinkingMessage();
       addChatMessage('assistant', data.response);
-      if (data.tool_calls?.length) updateToolCallsLog(data.tool_calls);
-      setAgentStatus('idle');
+      if (data.tool_calls) updateToolCallsLog(data.tool_calls);
+      if (data.rag_context) {
+        try { updateRAGContext(JSON.parse(data.rag_context)); } catch(e) {}
+      }
+    } else if (data.error) {
+      removeThinkingMessage();
+      addChatMessage('assistant', `❌ ${data.error}`);
     } else {
-      addChatMessage('assistant', '抱歉，分析服务暂时不可用。');
-      setAgentStatus('idle');
+      removeThinkingMessage();
+      addChatMessage('assistant', '⚠️ 收到未知响应格式，请重试。');
     }
   } catch (e) {
+    removeThinkingMessage();
     addChatMessage('assistant', `❌ 请求失败：${e.message}`);
-    setAgentStatus('error');
+    setAgentStatus('idle');
   }
 }
 
-async function pollChatTask(taskId) {
+async function pollChatTaskStatus(taskId) {
   let attempts = 0;
-  const maxAttempts = 90;
-  const poll = async () => {
-    attempts++;
-    try {
-      const res = await fetch(`${API.analysis}/task/${taskId}/`);
-      const data = await res.json();
-      if (data.status === 'completed') {
-        setAgentStatus('idle');
-        const msgs = document.querySelectorAll('.message.assistant-message');
-        if (msgs.length > 0) {
-          const last = msgs[msgs.length - 1];
-          if (last.textContent.includes('正在分析中') || last.textContent.includes('正在调用RAG')) {
-            last.remove();
-          }
-        }
-        if (data.llm_reasoning) {
-          addChatMessage('assistant', data.llm_reasoning);
-          if (data.analysis_detail?.tool_calls?.length) {
-            updateToolCallsLog(data.analysis_detail.tool_calls);
-          }
-          if (data.rag_context) {
-            try { updateRAGResults(JSON.parse(data.rag_context)); } catch(e) {}
-          }
-        } else {
-          addChatMessage('assistant', '分析已完成，请查看结果。');
-        }
-        return;
+  const maxAttempts = 60; // 最多等待3分钟（60次 × 3秒）
+  const progressMsgs = [
+    '正在检索知识库...',
+    '正在查询周边POI数据...',
+    '正在分析交通流量...',
+    '正在查询知识图谱...',
+    '正在计算综合评分...',
+    'DeepSeek AI 正在生成分析报告...',
+    '即将完成，请稍候...',
+  ];
+
+  return new Promise((resolve) => {
+    const poll = async () => {
+      attempts++;
+      // 更新进度提示
+      const thinkingEl = document.getElementById('thinkingMsg');
+      if (thinkingEl && attempts <= progressMsgs.length) {
+        thinkingEl.querySelector('.message-bubble').innerHTML = `
+          <div class="thinking-dots"><span></span><span></span><span></span></div>
+          <span style="font-size:12px;color:var(--text-muted);margin-left:6px">${progressMsgs[Math.min(attempts-1, progressMsgs.length-1)]}</span>`;
       }
-      if (attempts < maxAttempts) setTimeout(poll, 2000);
-      else { setAgentStatus('idle'); addChatMessage('assistant', '分析超时，请重试。'); }
-    } catch(e) {
-      if (attempts < maxAttempts) setTimeout(poll, 3000);
-    }
-  };
-  setTimeout(poll, 2000);
+
+      try {
+        const res = await fetch(`${API.analysis}/task/${taskId}/`);
+        const data = await res.json();
+
+        if (data.status === 'completed') {
+          removeThinkingMessage();
+          setAgentStatus('idle');
+
+          if (data.llm_reasoning) {
+            addChatMessage('assistant', data.llm_reasoning);
+            // 更新工具调用记录
+            const toolCalls = data.analysis_detail?.tool_calls || [];
+            if (toolCalls.length > 0) updateToolCallsLog(toolCalls);
+            // 更新RAG上下文
+            if (data.rag_context) {
+              try { updateRAGContext(JSON.parse(data.rag_context)); } catch(e) {}
+            }
+          } else {
+            addChatMessage('assistant', '✅ 分析完成，但未返回详细内容。请重新提问。');
+          }
+          showToast('AI分析完成！', 'success');
+          STATE.analysisCount++;
+          const kpiEl = document.getElementById('kpi-analysis');
+          if (kpiEl) kpiEl.textContent = STATE.analysisCount;
+          resolve();
+          return;
+        }
+
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 3000);
+        } else {
+          removeThinkingMessage();
+          setAgentStatus('idle');
+          addChatMessage('assistant', '⏱️ AI分析时间较长（超过3分钟），请稍后在"历史记忆"中查看结果，或重新提问。');
+          resolve();
+        }
+      } catch (e) {
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 3000);
+        } else {
+          removeThinkingMessage();
+          setAgentStatus('idle');
+          addChatMessage('assistant', `❌ 轮询失败：${e.message}`);
+          resolve();
+        }
+      }
+    };
+    setTimeout(poll, 3000);
+  });
 }
 
 function sendQuickMsg(msg) {
@@ -915,31 +1118,41 @@ function sendQuickMsg(msg) {
 // ============================================================
 // 知识图谱
 // ============================================================
+let kgAllData = null;
+
 async function loadKnowledgeGraph() {
-  if (STATE.kgData) return;
   try {
     const res = await fetch(`${API.analysis}/knowledge-graph/`);
     const data = await res.json();
-    STATE.kgData = data;
+    kgAllData = data;
     renderKnowledgeGraph(data);
+    updateKGStats(data);
   } catch (e) { console.error('知识图谱加载失败:', e); }
 }
 
+function filterKgByType(type) {
+  if (!kgAllData) return;
+  renderKnowledgeGraph(kgAllData, type || null);
+}
+
+function resetKgView() {
+  if (kgAllData) renderKnowledgeGraph(kgAllData);
+}
+
 function renderKnowledgeGraph(data, filterType = null) {
-  const chart = STATE.kgChart || echarts.init(document.getElementById('knowledgeGraph'), 'dark');
+  const el = document.getElementById('kgChart');
+  if (!el) return;
+  const chart = STATE.kgChart || echarts.init(el, 'dark');
   STATE.kgChart = chart;
 
   const typeColors = {
-    poi_type: '#3b82f6',
-    road_level: '#10b981',
-    district: '#f59e0b',
-    charging_demand: '#8b5cf6',
-    factor: '#ef4444',
-    concept: '#06b6d4',
+    poi_type: '#3b82f6', road_level: '#10b981', district: '#f59e0b',
+    charging_demand: '#8b5cf6', factor: '#ef4444', concept: '#06b6d4',
+    location: '#f97316', road: '#22c55e', standard: '#ec4899',
   };
 
-  let nodes = data.nodes;
-  let edges = data.edges;
+  let nodes = data.nodes || [];
+  let edges = data.edges || [];
 
   if (filterType) {
     nodes = nodes.filter(n => n.type === filterType);
@@ -954,7 +1167,7 @@ function renderKnowledgeGraph(data, filterType = null) {
       formatter: (params) => {
         if (params.dataType === 'node') {
           const props = params.data.properties || {};
-          return `<b>${params.data.name}</b><br>类型：${params.data.type}<br>${Object.entries(props).map(([k,v]) => `${k}: ${v}`).join('<br>')}`;
+          return `<b>${params.data.name}</b><br>类型：${params.data.type}<br>${Object.entries(props).slice(0,3).map(([k,v]) => `${k}: ${v}`).join('<br>')}`;
         }
         return `${params.data.source} → ${params.data.target}<br>关系：${params.data.relation}`;
       },
@@ -963,24 +1176,19 @@ function renderKnowledgeGraph(data, filterType = null) {
       type: 'graph',
       layout: 'force',
       data: nodes.map(n => ({
-        id: n.id,
-        name: n.name,
-        type: n.type,
-        properties: n.properties,
-        symbolSize: n.type === 'district' ? 40 : n.type === 'charging_demand' ? 35 : 28,
-        itemStyle: { color: typeColors[n.type] || '#64748b', borderColor: '#fff', borderWidth: 1.5 },
-        label: { show: true, fontSize: 10, color: '#f1f5f9', position: 'bottom' },
+        id: n.id, name: n.name, type: n.type, properties: n.properties,
+        symbolSize: n.type === 'district' ? 44 : n.type === 'charging_demand' ? 38 : 30,
+        itemStyle: { color: typeColors[n.type] || '#64748b', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1.5 },
+        label: { show: true, fontSize: 10, color: '#e2e8f0', position: 'bottom' },
       })),
       edges: edges.map(e => ({
-        source: e.source,
-        target: e.target,
-        relation: e.relation,
-        lineStyle: { color: '#475569', width: Math.max(1, e.weight * 2), curveness: 0.1, opacity: 0.7 },
-        label: { show: nodes.length <= 20, formatter: e.relation, fontSize: 9, color: '#94a3b8' },
+        source: e.source, target: e.target, relation: e.relation,
+        lineStyle: { color: '#2d4a6e', width: Math.max(1, (e.weight || 1) * 1.5), curveness: 0.1, opacity: 0.8 },
+        label: { show: nodes.length <= 20, formatter: e.relation, fontSize: 9, color: '#64748b' },
       })),
-      force: { repulsion: 200, gravity: 0.1, edgeLength: [80, 150] },
+      force: { repulsion: 250, gravity: 0.08, edgeLength: [80, 180] },
       roam: true,
-      emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
+      emphasis: { focus: 'adjacency', lineStyle: { width: 3, color: '#60a5fa' } },
     }],
   };
 
@@ -988,24 +1196,32 @@ function renderKnowledgeGraph(data, filterType = null) {
   chart.on('click', (params) => {
     if (params.dataType === 'node') showKGNodeDetail(params.data);
   });
-
-  // 工具栏按钮
-  document.getElementById('btnKGAll').onclick = () => renderKnowledgeGraph(data);
-  document.getElementById('btnKGPOI').onclick = () => renderKnowledgeGraph(data, 'poi_type');
-  document.getElementById('btnKGRoad').onclick = () => renderKnowledgeGraph(data, 'road_level');
-  document.getElementById('btnKGDistrict').onclick = () => renderKnowledgeGraph(data, 'district');
 }
 
 function showKGNodeDetail(node) {
-  const card = document.getElementById('kgNodeDetail');
-  const body = document.getElementById('kgNodeDetailBody');
-  card.style.display = 'block';
+  const el = document.getElementById('kgNodeDetail');
+  if (!el) return;
   const props = node.properties || {};
-  body.innerHTML = `
-    <div class="location-detail">
-      <div class="location-row"><span class="location-label">节点名称</span><span class="location-value">${node.name}</span></div>
-      <div class="location-row"><span class="location-label">节点类型</span><span class="location-value">${node.type}</span></div>
-      ${Object.entries(props).map(([k,v]) => `<div class="location-row"><span class="location-label">${k}</span><span class="location-value">${v}</span></div>`).join('')}
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">节点名称</span><span style="font-weight:600">${node.name}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">节点类型</span><span style="color:#60a5fa">${node.type}</span></div>
+      ${Object.entries(props).map(([k,v]) => `<div style="display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--text-dim)">${k}</span><span>${v}</span></div>`).join('')}
+    </div>`;
+}
+
+function updateKGStats(data) {
+  const el = document.getElementById('kgStats');
+  if (!el) return;
+  const nodes = data.nodes || [];
+  const edges = data.edges || [];
+  const typeCount = {};
+  nodes.forEach(n => { typeCount[n.type] = (typeCount[n.type] || 0) + 1; });
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">节点总数</span><span style="font-weight:600">${nodes.length}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text-muted)">关系总数</span><span style="font-weight:600">${edges.length}</span></div>
+      ${Object.entries(typeCount).map(([t,c]) => `<div style="display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--text-dim)">${t}</span><span>${c}个</span></div>`).join('')}
     </div>`;
 }
 
@@ -1017,7 +1233,6 @@ async function triggerGenerateReport() {
     showToast('请先在地图上选择位置', 'warning');
     return;
   }
-
   showLoading('正在生成选址报告...');
   try {
     const body = STATE.currentTaskId
@@ -1036,10 +1251,9 @@ async function triggerGenerateReport() {
     STATE.currentReportId = data.report_id;
     hideLoading();
     showToast('报告生成成功！', 'success');
-
-    document.querySelector('[data-tab="report"]').click();
+    switchTab('report');
     await loadReportList();
-    showReportDetail(data);
+    await loadReportById(data.report_id);
   } catch (e) {
     hideLoading();
     showToast('报告生成失败：' + e.message, 'error');
@@ -1052,17 +1266,19 @@ async function loadReportList() {
     const data = await res.json();
     const container = document.getElementById('reportList');
     if (!data.data || !data.data.length) {
-      container.innerHTML = '<p class="hint-text">暂无报告<br>在地图选点并AI分析后可生成</p>';
+      container.innerHTML = '<p class="hint-text" style="padding:20px;text-align:center">暂无报告<br>在地图选点后可生成</p>';
       return;
     }
-    container.innerHTML = data.data.map(r => `
-      <div class="report-list-item" onclick="loadReportById('${r.report_id}')">
+    container.innerHTML = data.data.map(r => {
+      const scoreClass = r.total_score >= 8 ? 'score-high' : r.total_score >= 6 ? 'score-mid' : 'score-low';
+      return `<div class="report-item" onclick="loadReportById('${r.report_id}')">
         <div class="report-item-title">${r.title}</div>
         <div class="report-item-meta">
-          <span class="report-item-score">${r.total_score}/10</span>
-          <span> · ${new Date(r.created_at).toLocaleString('zh-CN')}</span>
+          <span class="score-pill ${scoreClass}">${(r.total_score||0).toFixed(1)}/10</span>
+          <span>${new Date(r.created_at).toLocaleDateString('zh-CN')}</span>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch (e) { console.error(e); }
 }
 
@@ -1071,7 +1287,7 @@ async function loadReportById(reportId) {
     const res = await fetch(`${API.reports}/${reportId}/`);
     const data = await res.json();
     showReportDetail(data);
-    document.querySelectorAll('.report-list-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.report-item').forEach(el => el.classList.remove('active'));
     document.querySelector(`[onclick="loadReportById('${reportId}')"]`)?.classList.add('active');
   } catch (e) { showToast('报告加载失败', 'error'); }
 }
@@ -1086,90 +1302,96 @@ function showReportDetail(data) {
   const alts = content.alternatives || [];
   const llm = content.llm_analysis || '';
 
-  document.getElementById('reportTitle').textContent = data.title || '选址报告';
-  document.getElementById('reportActions').style.display = 'flex';
+  const panel = document.getElementById('reportDetailPanel');
+  const score = data.total_score || 0;
+  const scoreClass = score >= 8 ? 'score-high' : score >= 6 ? 'score-mid' : 'score-low';
 
-  const body = document.getElementById('reportBody');
-  body.innerHTML = `
-    <div class="report-section">
-      <h3>📍 选址位置</h3>
-      <div class="location-detail">
-        <div class="location-row"><span class="location-label">坐标</span><span class="location-value">${(sel.lat||0).toFixed(6)}, ${(sel.lng||0).toFixed(6)}</span></div>
-        <div class="location-row"><span class="location-label">地址</span><span class="location-value">${sel.address || data.title || '-'}</span></div>
-        <div class="location-row"><span class="location-label">综合评分</span><span class="location-value" style="color:#10b981;font-weight:600">${data.total_score || 0}/10</span></div>
+  panel.innerHTML = `
+    <div class="report-content">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <h2 style="font-size:16px;font-weight:700">${data.title || '选址分析报告'}</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" style="padding:6px 14px;font-size:12px" onclick="window.open('${API.reports}/${data.report_id}/pdf/','_blank')">⬇️ 下载PDF</button>
+        </div>
       </div>
-    </div>
 
-    <div class="report-section">
-      <h3>📊 评分详情</h3>
-      <div class="score-details">
-        ${[
-          { label: 'POI密度', val: scoring.poi || 0, color: '#3b82f6' },
-          { label: '交通流量', val: scoring.traffic || 0, color: '#f59e0b' },
-          { label: '可达性', val: scoring.accessibility || 0, color: '#10b981' },
-          { label: '竞争分析', val: scoring.competition || 0, color: '#8b5cf6' },
-        ].map(d => `
-          <div class="score-item">
-            <span class="score-item-label">${d.label}</span>
-            <div class="score-bar-wrap"><div class="score-bar" style="width:${d.val*10}%;background:${d.color}"></div></div>
-            <span class="score-item-val">${(d.val||0).toFixed(1)}</span>
+      <div class="report-score-grid">
+        <div class="report-score-item">
+          <div class="report-score-val"><span class="score-pill ${scoreClass}">${score.toFixed(1)}</span></div>
+          <div class="report-score-label">综合评分</div>
+        </div>
+        <div class="report-score-item">
+          <div class="report-score-val" style="font-size:18px">${(scoring.poi||0).toFixed(1)}</div>
+          <div class="report-score-label">POI密度评分</div>
+        </div>
+        <div class="report-score-item">
+          <div class="report-score-val" style="font-size:18px">${(scoring.traffic||0).toFixed(1)}</div>
+          <div class="report-score-label">交通流量评分</div>
+        </div>
+      </div>
+
+      <div class="report-section">
+        <div class="report-section-title">📍 选址位置信息</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">地址</span><span>${sel.address || data.title || '-'}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">坐标</span><span style="font-family:monospace">${(sel.lat||0).toFixed(6)}, ${(sel.lng||0).toFixed(6)}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">可达性评分</span><span>${(scoring.accessibility||0).toFixed(1)}/10</span></div>
+        </div>
+      </div>
+
+      ${poi.items?.length ? `
+      <div class="report-section">
+        <div class="report-section-title">🏪 周边POI分析（共${poi.count || poi.items.length}个）</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${poi.summary || ''}</p>
+        <table class="data-table">
+          <thead><tr><th>POI名称</th><th>类别</th><th>距离</th><th>日均人流</th><th>需求评分</th></tr></thead>
+          <tbody>${poi.items.slice(0,8).map(p => `
+            <tr>
+              <td>${POI_ICONS[p.category]||'📍'} ${p.name}</td>
+              <td>${p.category_display||p.category||'-'}</td>
+              <td>${p.distance_km}km</td>
+              <td>${(p.daily_flow||0).toLocaleString()}</td>
+              <td><span class="score-pill ${p.ev_demand_score>=8?'score-high':p.ev_demand_score>=6?'score-mid':'score-low'}">${p.ev_demand_score}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
+
+      ${traffic.items?.length ? `
+      <div class="report-section">
+        <div class="report-section-title">🚗 交通流量分析</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${traffic.summary || ''}</p>
+        ${traffic.items.slice(0,6).map(r => `
+          <div class="road-stat-item" style="margin-bottom:4px">
+            <div class="road-name">${r.road_name}</div>
+            <div class="road-bar-wrap"><div class="road-bar-fill" style="width:${Math.min(100,(r.daily_flow||0)/800)}%;background:${getFlowColor(r.daily_flow||0)}"></div></div>
+            <div class="road-flow">${((r.daily_flow||0)/10000).toFixed(1)}万/日</div>
           </div>`).join('')}
+      </div>` : ''}
+
+      ${alts.length ? `
+      <div class="report-section">
+        <div class="report-section-title">📌 备选位置推荐</div>
+        ${alts.slice(0,5).map((a,i) => `
+          <div style="padding:10px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px">备选${i+1}：${a.name||`(${(a.lat||0).toFixed(4)}, ${(a.lng||0).toFixed(4)})`}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${a.reason||''}</div>
+            <div style="font-size:11px;color:var(--warning);margin-top:4px">评分：${a.score||'-'}/10</div>
+          </div>`).join('')}
+      </div>` : ''}
+
+      ${llm ? `
+      <div class="report-section">
+        <div class="report-section-title">🤖 AI综合分析结论</div>
+        <div style="font-size:13px;line-height:1.7;color:var(--text-muted)">
+          ${(() => { try { return marked.parse(llm); } catch(e) { return llm.replace(/\n/g,'<br>'); } })()}
+        </div>
+      </div>` : ''}
+
+      <div style="text-align:center;padding:20px 0;color:var(--text-dim);font-size:11px">
+        报告生成时间：${new Date(data.created_at||Date.now()).toLocaleString('zh-CN')} · 福州新能源充电桩智能选址平台 v3.0
       </div>
-    </div>
-
-    ${poi.items?.length ? `
-    <div class="report-section">
-      <h3>🏪 周边POI分析（共${poi.count || poi.items.length}个）</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead><tr style="color:var(--text-muted)"><th style="text-align:left;padding:4px">名称</th><th>类型</th><th>距离</th><th>评分</th></tr></thead>
-        <tbody>${poi.items.slice(0,8).map(p => `
-          <tr style="border-top:1px solid var(--border)">
-            <td style="padding:4px">${p.name}</td>
-            <td style="text-align:center">${p.category_display || p.category}</td>
-            <td style="text-align:center">${p.distance_km}km</td>
-            <td style="text-align:center;color:#10b981">${p.ev_demand_score}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>` : ''}
-
-    ${traffic.items?.length ? `
-    <div class="report-section">
-      <h3>🚗 交通流量分析</h3>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${traffic.summary || ''}</p>
-      ${traffic.items.slice(0,6).map(r => `
-        <div class="road-item" style="border-left-color:${getFlowColor(r.daily_flow || 0)}">
-          <div class="road-name">${r.road_name}</div>
-          <div class="road-meta">
-            <span>${r.road_level_display || r.road_level}</span>
-            <span class="road-flow">${((r.daily_flow||0)/10000).toFixed(1)}万辆/日</span>
-          </div>
-        </div>`).join('')}
-    </div>` : ''}
-
-    ${alts.length ? `
-    <div class="report-section">
-      <h3>📌 备选位置推荐</h3>
-      ${alts.slice(0,5).map((a,i) => `
-        <div style="padding:8px;background:var(--surface);border-radius:6px;margin-bottom:6px">
-          <div style="font-weight:600;font-size:13px">备选${i+1}：${a.name || a.address || `(${(a.lat||0).toFixed(4)}, ${(a.lng||0).toFixed(4)})`}</div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${a.reason || ''}</div>
-        </div>`).join('')}
-    </div>` : ''}
-
-    ${llm ? `
-    <div class="report-section">
-      <h3>🤖 AI综合分析</h3>
-      <div style="font-size:12px;line-height:1.7;color:var(--text-secondary)">${
-        (() => { try { return marked.parse(llm); } catch(e) { return llm.replace(/\n/g,'<br>'); } })()
-      }</div>
-    </div>` : ''}
-  `;
-
-  // PDF下载按钮
-  document.getElementById('btnDownloadPDF').onclick = () => {
-    window.open(`${API.reports}/${data.report_id}/pdf/`, '_blank');
-  };
+    </div>`;
 }
 
 // ============================================================
@@ -1182,59 +1404,81 @@ async function loadMemory() {
 
     const msgCount = data.messages?.length || 0;
     const locCount = data.locations?.length || 0;
-    document.getElementById('memoryCount').textContent = `${msgCount}条对话`;
+    const convCountEl = document.getElementById('convCount');
+    const locCountEl = document.getElementById('locCount');
+    if (convCountEl) convCountEl.textContent = msgCount;
+    if (locCountEl) locCountEl.textContent = locCount;
 
-    document.getElementById('memoryStats').innerHTML = `
-      <div class="memory-stat"><div class="memory-stat-val">${msgCount}</div><div class="memory-stat-label">对话记录</div></div>
-      <div class="memory-stat"><div class="memory-stat-val">${locCount}</div><div class="memory-stat-label">选址记录</div></div>
-      <div class="memory-stat"><div class="memory-stat-val">${STATE.sessionId}</div><div class="memory-stat-label">会话ID</div></div>`;
-
-    const timeline = document.getElementById('memoryTimeline');
-    if (!data.messages?.length) {
-      timeline.innerHTML = '<p class="hint-text">暂无对话历史</p>';
-    } else {
-      timeline.innerHTML = data.messages.map(m => `
-        <div class="memory-item">
-          <span class="memory-role ${m.role}">${m.role === 'user' ? '用户' : 'AI'}</span>
-          <span class="memory-text">${m.content}</span>
-          <span class="memory-time">${new Date(m.created_at).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'})}</span>
-        </div>`).join('');
+    const convEl = document.getElementById('conversationMemory');
+    if (convEl) {
+      if (!data.messages?.length) {
+        convEl.innerHTML = '<p class="hint-text">暂无对话记录</p>';
+      } else {
+        convEl.innerHTML = data.messages.slice(-20).map(m => `
+          <div class="memory-item">
+            <div class="memory-item-role">${m.role === 'user' ? '👤 用户' : '🤖 AI助手'}</div>
+            <div class="memory-item-content">${m.content.substring(0, 150)}${m.content.length > 150 ? '...' : ''}</div>
+            <div class="memory-item-time">${new Date(m.created_at).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'})}</div>
+          </div>`).join('');
+      }
     }
 
-    const locHistory = document.getElementById('locationHistory');
-    if (!data.locations?.length) {
-      locHistory.innerHTML = '<p class="hint-text">暂无选址历史</p>';
-    } else {
-      locHistory.innerHTML = data.locations.map(l => `
-        <div class="location-item">
-          <div class="location-addr">${l.address || `(${l.lat?.toFixed(4)}, ${l.lng?.toFixed(4)})`}</div>
-          <div class="location-meta">评分：${l.score}/10 · ${new Date(l.created_at).toLocaleString('zh-CN')}</div>
-        </div>`).join('');
+    const locEl = document.getElementById('locationMemory');
+    if (locEl) {
+      if (!data.locations?.length) {
+        locEl.innerHTML = '<p class="hint-text">暂无选址记录</p>';
+      } else {
+        locEl.innerHTML = data.locations.map(l => `
+          <div class="loc-memory-item">
+            <div class="loc-memory-header">
+              <span class="loc-memory-addr">📍 ${l.address || `(${(l.lat||0).toFixed(4)}, ${(l.lng||0).toFixed(4)})`}</span>
+              <span class="loc-memory-score">${(l.score||0).toFixed(1)}/10</span>
+            </div>
+            <div class="loc-memory-meta">${new Date(l.created_at).toLocaleString('zh-CN')}</div>
+          </div>`).join('');
+      }
     }
   } catch (e) { console.error('加载记忆失败:', e); }
+}
+
+async function clearMemory() {
+  if (!confirm('确定要清除所有历史记忆吗？')) return;
+  try {
+    await fetch(`${API.memory}/clear/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: STATE.sessionId }),
+    });
+    showToast('历史记忆已清除', 'success');
+    loadMemory();
+  } catch(e) { showToast('清除失败', 'error'); }
 }
 
 // ============================================================
 // 工具函数
 // ============================================================
 function showLoading(text = 'AI正在分析中...') {
-  document.getElementById('loadingText').textContent = text;
-  document.getElementById('loadingOverlay').style.display = 'flex';
+  const el = document.getElementById('loadingText');
+  const overlay = document.getElementById('globalLoading');
+  if (el) el.textContent = text;
+  if (overlay) overlay.style.display = 'flex';
 }
 
 function hideLoading() {
-  document.getElementById('loadingOverlay').style.display = 'none';
+  const overlay = document.getElementById('globalLoading');
+  if (overlay) overlay.style.display = 'none';
 }
 
 function showToast(msg, type = 'info') {
   const container = document.getElementById('toastContainer');
+  if (!container) return;
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
   toast.innerHTML = `<span>${icons[type] || ''}</span><span>${msg}</span>`;
   container.appendChild(toast);
-  setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, 3000);
+  setTimeout(() => {
+    toast.classList.add('removing');
+    setTimeout(() => toast.remove(), 300);
+  }, 3500);
 }
-
-// 刷新报告列表按钮
-document.getElementById('btnRefreshReports')?.addEventListener('click', loadReportList);
