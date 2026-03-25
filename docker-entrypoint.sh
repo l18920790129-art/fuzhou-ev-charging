@@ -13,20 +13,26 @@ python -c "
 import django, os
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'fuzhou_ev_charging.settings')
 django.setup()
-from maps.models import POIData
-if POIData.objects.count() == 0:
+from maps.models import POIData, Road
+poi_count = POIData.objects.count()
+road_count = Road.objects.count()
+if poi_count == 0:
     print('数据库为空，开始初始化...')
     import subprocess
     subprocess.run(['python', 'data/init_fuzhou_data.py'], check=True)
     subprocess.run(['python', 'data/enhance_data.py'], check=True)
     print('数据初始化完成')
+    # 只在首次初始化时更新道路数据
+    subprocess.run(['python', 'fix_roads.py'], check=True)
+    print('道路数据初始化完成')
+elif road_count == 0:
+    print(f'数据库已有 {poi_count} 条POI，但无道路数据，初始化道路...')
+    import subprocess
+    subprocess.run(['python', 'fix_roads.py'], check=True)
+    print('道路数据初始化完成')
 else:
-    print(f'数据库已有 {POIData.objects.count()} 条POI数据，跳过初始化')
+    print(f'数据库已有 {poi_count} 条POI、{road_count} 条道路，跳过初始化')
 "
-
-# 更新主干道真实坐标数据（每次启动都执行，确保数据最新）
-echo ">>> 更新主干道真实坐标数据..."
-python fix_roads.py || echo "道路数据更新跳过"
 
 # 构建知识库（如果不存在）
 echo ">>> 检查知识库..."
