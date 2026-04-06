@@ -4,6 +4,7 @@ import { FileText, Download, Loader2, MapPin, Star } from "lucide-react";
 import { toast } from "sonner";
 import { nanoid } from "nanoid";
 import { Streamdown } from "streamdown";
+import jsPDF from "jspdf";
 
 const SESSION_KEY = "ev_session_id";
 function getSessionId() {
@@ -19,6 +20,7 @@ export default function Reports() {
   const [address, setAddress] = useState("福州市鼓楼区候选位置");
   const [report, setReport] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const { data: historyData } = trpc.reports.list.useQuery({ sessionId });
   const reportMutation = trpc.reports.generate.useMutation();
@@ -36,14 +38,132 @@ export default function Reports() {
     }
   };
 
-  const downloadReport = () => {
+  const downloadReport = async () => {
     if (!report) return;
-    const content = `# ${address} 充电站选址分析报告\n\n生成时间：${new Date().toLocaleString("zh-CN")}\n综合评分：${report.score?.totalScore ?? "N/A"} / 10\n\n${report.reportContent}`;
-    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `选址报告_${address}_${Date.now()}.md`;
-    a.click(); URL.revokeObjectURL(url);
+    setIsDownloading(true);
+    toast.info("正在生成PDF，请稍候...");
+    try {
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      const contentWidth = pageWidth - margin * 2;
+      let y = margin;
+
+      // 标题
+      pdf.setFontSize(16);
+      pdf.setTextColor(0, 180, 180);
+      const titleLines = pdf.splitTextToSize(`${address} - 充电桩选址分析报告`, contentWidth);
+      titleLines.forEach((line: string) => {
+        pdf.text(line, margin, y);
+        y += 9;
+      });
+
+      // 分割线
+      pdf.setDrawColor(0, 180, 180);
+      pdf.setLineWidth(0.5);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 7;
+
+      // 基本信息
+      pdf.setFontSize(10);
+      pdf.setTextColor(80, 80, 80);
+      pdf.text(`生成时间：${new Date().toLocaleString("zh-CN")}`, margin, y);
+      y += 6;
+      pdf.text(`位置坐标：纬度 ${lat.toFixed(4)}，经度 ${lng.toFixed(4)}`, margin, y);
+      y += 6;
+
+      // 综合评分
+      pdf.setFontSize(13);
+      pdf.setTextColor(0, 180, 80);
+      pdf.text(`综合评分：${report.score?.totalScore ?? "N/A"} / 10（${report.score?.grade ?? ""}）`, margin, y);
+      y += 9;
+
+      // 评分详情
+      if (report.score?.scoreBreakdown) {
+        pdf.setFontSize(11);
+        pdf.setTextColor(40, 40, 40);
+        pdf.text("评分详情：", margin, y);
+        y += 6;
+        const breakdown = report.score.scoreBreakdown;
+        const items: [string, number, string][] = [
+          ["POI密度", breakdown.poi, "35%"],
+          ["交通流量", breakdown.traffic, "30%"],
+          ["可达性", breakdown.accessibility, "20%"],
+          ["竞争分析", breakdown.competition, "15%"],
+        ];
+        pdf.setFontSize(10);
+        pdf.setTextColor(60, 60, 60);
+        items.forEach(([name, score, weight]) => {
+          pdf.text(`  • ${name}：${score}/10（权重${weight}）`, margin, y);
+          y += 5.5;
+        });
+        y += 4;
+      }
+
+      // 分割线
+      pdf.setDrawColor(200, 200, 200);
+      pdf.setLineWidth(0.3);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 7;
+
+      // 报告正文（去除Markdown符号）
+      pdf.setFontSize(10);
+      pdf.setTextColor(40, 40, 40);
+      const rawContent = report.reportContent ?? "";
+      const plainText = rawContent
+        .replace(/^#{1,6}\s+(.+)$/gm, "【$1】")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/^[-*+]\s+/gm, "• ")
+        .replace(/\|[^\n]+\|/g, "")
+        .replace(/^[-|]+$/gm, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+
+      const lines = pdf.splitTextToSize(plainText, contentWidth);
+      lines.forEach((line: string) => {
+        if (y > pageHeight - margin - 10) {
+          pdf.addPage();
+          y = margin;
+        }
+        // 标题行加粗显示
+        if (line.startsWith("【") && line.endsWith("】")) {
+          pdf.setFontSize(11);
+          pdf.setTextColor(0, 120, 180);
+          pdf.text(line, margin, y);
+          pdf.setFontSize(10);
+          pdf.setTextColor(40, 40, 40);
+          y += 7;
+        } else {
+          pdf.text(line, margin, y);
+          y += 5.5;
+        }
+      });
+
+      // 页脚
+      const totalPages = pdf.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        pdf.setPage(i);
+        pdf.setFontSize(8);
+        pdf.setTextColor(150, 150, 150);
+        pdf.text(
+          `福州新能源充电桩智能选址平台 | 第 ${i} / ${totalPages} 页`,
+          margin,
+          pageHeight - 8
+        );
+        pdf.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+      }
+
+      pdf.save(`选址报告_${address}_${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success("PDF已下载");
+    } catch (err) {
+      console.error("PDF生成失败", err);
+      toast.error("PDF生成失败，请重试");
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const gradeColor = !report?.score ? "" : report.score.totalScore >= 8.5 ? "score-excellent"
@@ -136,11 +256,12 @@ export default function Reports() {
               <div className={`text-lg font-bold ${gradeColor}`}>{report.score?.totalScore} 分</div>
               <button
                 onClick={downloadReport}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all"
+                disabled={isDownloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all disabled:opacity-60"
                 style={{ background: "oklch(0.62 0.22 200 / 0.2)", border: "1px solid oklch(0.62 0.22 200 / 0.4)", color: "oklch(0.72 0.18 200)" }}
               >
-                <Download className="w-3.5 h-3.5" />
-                下载报告
+                {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                {isDownloading ? "生成中..." : "下载PDF"}
               </button>
             </div>
           )}
