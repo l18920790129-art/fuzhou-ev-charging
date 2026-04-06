@@ -189,22 +189,16 @@ export const appRouter = router({
       }),
 
     getTrafficFlow: publicProcedure.query(async () => {
-      const db = await getDb();
-      const rawRows: any[] = db ? await db.select().from(trafficFlow)
-        : STATIC_TRAFFIC_FLOW.map(r => ({ ...r, heatWeight: 1.0, centerLat: r.latitude, centerLng: r.longitude, roadLevel: 'arterial', createdAt: new Date() }));
-      // 为每条道路生成路径坐标（基于中心点生成道路线段）
-      const rows = rawRows.map(r => {
-        if (r.path) return r; // 已有path则直接使用
-        const lat = r.centerLat ?? r.latitude;
-        const lng = r.centerLng ?? r.longitude;
-        const len = 0.015; // 约1.5km的路段
-        // 根据道路名称判断方向（东西向或南北向）
-        const isEW = r.roadName?.includes('路') || r.roadName?.includes('大道');
-        const path = isEW
-          ? [{ lat, lng: lng - len }, { lat, lng: lng + len }]
-          : [{ lat: lat - len, lng }, { lat: lat + len, lng }];
-        return { ...r, path, name: r.roadName ?? r.name };
-      });
+      // 使用staticData中通过高德JS SDK路径规划API采集的真实道路路径坐标
+      const rows = STATIC_TRAFFIC_FLOW.map(r => ({
+        ...r,
+        heatWeight: Math.min(1.0, r.dailyFlow / 100000),
+        centerLat: r.latitude,
+        centerLng: r.longitude,
+        roadLevel: r.dailyFlow > 80000 ? 'expressway' : r.dailyFlow > 50000 ? 'arterial' : 'secondary',
+        name: r.roadName,
+        createdAt: new Date(),
+      }));
       return { data: rows, total: rows.length };
     }),
 
@@ -406,8 +400,7 @@ ${s.nearbyRoads.slice(0, 5).map((r: any, i: number) => (i+1) + ". **" + r.name +
 
 ## 五、风险评估
 
-${s.exclusionConflicts.length > 0 ? `⚠️ **禁区冲突警告：** 该位置与以下禁区存在冲突，**不建议建站**：
-${s.exclusionConflicts.join("、")}` : "✅ **无禁区冲突：** 该位置不在任何禁止建设区域内。"}
+${s.exclusionConflicts.length > 0 ? "⚠️ **禁区冲突警告：** 该位置与以下禁区存在冲突，**不建议建站**：\n" + s.exclusionConflicts.join("、") : "✅ **无禁区冲突：** 该位置不在任何禁止建设区域内。"}
 
 **主要风险点：**
 ${s.totalScore < 6 ? "- 综合评分偏低，建议重新选址" : ""}

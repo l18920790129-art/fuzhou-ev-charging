@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+
+// Mock LLM调用，避免真实网络请求超时
+vi.mock("./_core/llm", () => ({
+  invokeLLM: vi.fn().mockRejectedValue(new Error("LLM mocked unavailable for testing")),
+}));
 
 function createCtx(): TrpcContext {
   return {
@@ -132,13 +137,20 @@ describe("maps.getTrafficFlow path generation", () => {
     expect(Array.isArray(road.path)).toBe(true);
     expect(road.path.length).toBeGreaterThanOrEqual(2);
     const point = road.path[0];
-    expect(point).toHaveProperty("lat");
-    expect(point).toHaveProperty("lng");
+    // path格式支持两种：[lng, lat]数组或 {lat, lng}对象
+    if (Array.isArray(point)) {
+      expect(point.length).toBeGreaterThanOrEqual(2);
+      expect(typeof point[0]).toBe("number");
+      expect(typeof point[1]).toBe("number");
+    } else {
+      expect(point).toHaveProperty("lat");
+      expect(point).toHaveProperty("lng");
+    }
   });
 });
 
 describe("reports.generate fallback", () => {
-  it("generates report without LLM", async () => {
+  it("generates report without LLM (fallback mode)", async () => {
     const caller = appRouter.createCaller(createCtx());
     const result = await caller.reports.generate({
       lat: 26.0756, lng: 119.3034,
@@ -150,11 +162,11 @@ describe("reports.generate fallback", () => {
     expect(result.reportContent.length).toBeGreaterThan(100);
     expect(result).toHaveProperty("score");
     expect(result).toHaveProperty("address");
-  }, 30000);
+  }, 15000);
 });
 
 describe("analysis.aiAnalysis fallback", () => {
-  it("returns analysis content without LLM", async () => {
+  it("returns analysis content without LLM (fallback mode)", async () => {
     const caller = appRouter.createCaller(createCtx());
     const result = await caller.analysis.aiAnalysis({
       lat: 26.0756, lng: 119.3034,
@@ -165,5 +177,5 @@ describe("analysis.aiAnalysis fallback", () => {
     expect(typeof result.content).toBe("string");
     expect(result.content.length).toBeGreaterThan(50);
     expect(result).toHaveProperty("score");
-  }, 30000);
+  }, 15000);
 });

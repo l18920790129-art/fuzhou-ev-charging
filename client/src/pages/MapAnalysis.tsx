@@ -88,6 +88,7 @@ export default function MapAnalysis() {
   const [layers, setLayers] = useState({ poi: true, roads: true, zones: true, stations: true });
   const [selectedScore, setSelectedScore] = useState<any>(null);
   const [isScoring, setIsScoring] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   const { data: poiResult } = trpc.maps.getPOI.useQuery();
   const { data: trafficResult } = trpc.maps.getTrafficFlow.useQuery();
@@ -118,6 +119,10 @@ export default function MapAnalysis() {
         features: ["bg", "road", "building", "point"],
       });
       mapInstance.current = map;
+      // 地图初始化完成后触发图层渲染
+      map.on('complete', () => setMapReady(true));
+      // 备用：如果complete事件没有触发，1.5秒后强制设置
+      setTimeout(() => setMapReady(true), 1500);
 
       map.on("click", async (e: any) => {
         const { lat, lng } = e.lnglat;
@@ -147,12 +152,15 @@ export default function MapAnalysis() {
   // 渲染POI图层
   useEffect(() => {
     const map = mapInstance.current;
-    if (!map || !poiResult?.data) return;
+    if (!map || !mapReady || !poiResult?.data) return;
     const catColors: Record<string, string> = {
+      // 旧分类名
       mall: "#00d4ff", hotel: "#a78bfa", hospital: "#f87171", school: "#34d399",
       office: "#60a5fa", residential: "#fbbf24", transport: "#fb923c",
       gas_station: "#94a3b8", parking: "#c084fc", restaurant: "#f472b6",
       scenic: "#4ade80", government: "#64748b",
+      // 新分类名（高德API返回）
+      shopping_mall: "#00d4ff", transport_hub: "#fb923c",
     };
     poiResult.data.forEach(poi => {
       if (!layers.poi) return;
@@ -167,12 +175,12 @@ export default function MapAnalysis() {
       map.add(marker);
       markersRef.current.push(marker);
     });
-  }, [poiResult, layers.poi]);
+  }, [poiResult, layers.poi, mapReady]);
 
   // 渲染充电站图层
   useEffect(() => {
     const map = mapInstance.current;
-    if (!map || !stationsResult?.data || !layers.stations) return;
+    if (!map || !mapReady || !stationsResult?.data || !layers.stations) return;
     stationsResult.data.forEach(s => {
       const marker = new window.AMap.Marker({
         position: [s.longitude, s.latitude],
@@ -182,12 +190,12 @@ export default function MapAnalysis() {
       map.add(marker);
       markersRef.current.push(marker);
     });
-  }, [stationsResult, layers.stations]);
+  }, [stationsResult, layers.stations, mapReady]);
 
   // 渲染禁区图层
   useEffect(() => {
     const map = mapInstance.current;
-    if (!map || !zonesResult?.data || !layers.zones) return;
+    if (!map || !mapReady || !zonesResult?.data || !layers.zones) return;
     zonesResult.data.forEach(zone => {
       const circle = new window.AMap.Circle({
         center: [zone.centerLng, zone.centerLat],
@@ -201,12 +209,12 @@ export default function MapAnalysis() {
       map.add(circle);
       markersRef.current.push(circle);
     });
-  }, [zonesResult, layers.zones]);
+  }, [zonesResult, layers.zones, mapReady]);
 
   // 渲染道路交通流量图层
   useEffect(() => {
     const map = mapInstance.current;
-    if (!map || !trafficResult?.data) return;
+    if (!map || !mapReady || !trafficResult?.data) return;
     if (!layers.roads) return;
     const getTrafficColor = (intensity: number) => {
       if (intensity >= 8) return "#ef4444"; // 高流量 - 红色
@@ -221,7 +229,7 @@ export default function MapAnalysis() {
       const weight = Math.max(2, Math.min(6, 2 + intensity * 0.4));
       try {
         const polyline = new window.AMap.Polyline({
-          path: road.path.map((p: any) => [p.lng, p.lat]),
+          path: road.path.map((p: any) => Array.isArray(p) ? [p[0], p[1]] : [p.lng, p.lat]),
           strokeColor: color,
           strokeOpacity: 0.85,
           strokeWeight: weight,
@@ -234,7 +242,7 @@ export default function MapAnalysis() {
         // 忽略单条道路渲染错误
       }
     });
-  }, [trafficResult, layers.roads]);
+  }, [trafficResult, layers.roads, mapReady]);
 
   const toggleLayer = (key: keyof typeof layers) => {
     setLayers(prev => ({ ...prev, [key]: !prev[key] }));
