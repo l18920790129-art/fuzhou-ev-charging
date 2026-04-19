@@ -297,7 +297,7 @@ body {
 .chart-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
 .chart-title { font-weight: 600; font-size: 13px; }
 .chart-sub { font-size: 11px; color: var(--text-muted); }
-.chart-box { flex: 1; min-height: 0; }
+.chart-box { flex: 1; min-height: 0; height: 210px; }
 
 .bottom-row { display: flex; gap: 10px; flex: 1; min-height: 0; }
 .table-card {

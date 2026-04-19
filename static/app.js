@@ -153,23 +153,39 @@ function onTabSwitch(tabName) {
 // ============================================================
 // 数据大屏
 // ============================================================
+async function fetchWithTimeout(url, timeout = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    return res;
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
 async function loadDashboard() {
   try {
-    const [poisRes, trafficRes, stationsRes, zonesRes] = await Promise.all([
-      fetch(`${API.maps}/pois/`),
-      fetch(`${API.maps}/traffic/`),
-      fetch(`${API.maps}/candidates/`),
-      fetch(`${API.maps}/exclusion-zones/`),
-    ]);
-    const poisData = await poisRes.json();
-    const trafficData = await trafficRes.json();
-    const stationsData = await stationsRes.json();
-    const zonesData = await zonesRes.json();
-
-    const pois = poisData.data || [];
-    const roads = trafficData.data || [];
-    const stations = stationsData.data || [];
-    const zones = zonesData.data || [];
+    // 逐个请求，防止 Promise.all 因一个超时而全部失败
+    let pois = [], roads = [], stations = [], zones = [];
+    try {
+      const r = await fetchWithTimeout(`${API.maps}/pois/`, 30000);
+      const d = await r.json(); pois = d.data || [];
+    } catch(e) { console.warn('POI fetch failed:', e); }
+    try {
+      const r = await fetchWithTimeout(`${API.maps}/traffic/`, 30000);
+      const d = await r.json(); roads = d.data || [];
+    } catch(e) { console.warn('Traffic fetch failed:', e); }
+    try {
+      const r = await fetchWithTimeout(`${API.maps}/candidates/`, 30000);
+      const d = await r.json(); stations = d.data || [];
+    } catch(e) { console.warn('Candidates fetch failed:', e); }
+    try {
+      const r = await fetchWithTimeout(`${API.maps}/exclusion-zones/`, 30000);
+      const d = await r.json(); zones = d.data || [];
+    } catch(e) { console.warn('Exclusion zones fetch failed:', e); }
 
     // 更新KPI
     document.getElementById('kpi-poi').textContent = pois.length;
@@ -180,11 +196,17 @@ async function loadDashboard() {
     if (document.getElementById('kpi-stations')) document.getElementById('kpi-stations').textContent = stations.length;
     if (document.getElementById('kpi-exclusion')) document.getElementById('kpi-exclusion').textContent = zones.length;
 
-    // 渲染图表
-    renderPOICategoryChart(pois);
-    renderTrafficDistrictChart(roads);
-    renderEVDemandChart(pois);
-    renderTopPOITable(pois);
+    // 等待 DOM 布局完成后再渲染图表
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        renderPOICategoryChart(pois);
+        renderTrafficDistrictChart(roads);
+        renderEVDemandChart(pois);
+        renderTopPOITable(pois);
+        // 强制 resize 确保图表尺寸正确
+        setTimeout(() => resizeDashboardCharts(), 100);
+      }, 50);
+    });
 
     // 更新时间
     document.getElementById('lastUpdateTime').textContent = new Date().toLocaleTimeString('zh-CN');
