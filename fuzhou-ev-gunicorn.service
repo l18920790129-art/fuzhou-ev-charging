@@ -1,0 +1,16 @@
+[Unit]
+Description=福州新能源充电桩智能选址平台 Gunicorn
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/fuzhou-ev-charging
+Environment="DEEPSEEK_API_KEY=sk-465f3be43b3e4a79bc0960503121cb6d"
+Environment="AMAP_KEY=283b21e285a807bf7bda4cf43e838a26"
+ExecStart=/usr/local/bin/gunicorn --workers 3 --timeout 180 --bind 0.0.0.0:8000 fuzhou_ev_charging.wsgi:application
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
