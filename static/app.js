@@ -63,7 +63,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   initMap();
   initHeatmapButtons();
   initChatHandlers();
-  loadDashboard();
+  // 等待两帧确保 CSS 布局完成，再初始化 ECharts（否则容器 offsetWidth=0）
+  requestAnimationFrame(() => requestAnimationFrame(() => loadDashboard()));
   loadReportList();
   loadMemory();
   startStatusUpdater();
@@ -126,7 +127,12 @@ function onTabSwitch(tabName) {
   if (tabName === 'memory') loadMemory();
   if (tabName === 'report') loadReportList();
   if (tabName === 'dashboard') {
-    setTimeout(() => resizeDashboardCharts(), 100);
+    // 如果图表还未初始化，重新加载；否则只做 resize
+    if (Object.keys(STATE.dashboardCharts).length === 0) {
+      requestAnimationFrame(() => requestAnimationFrame(() => loadDashboard()));
+    } else {
+      setTimeout(() => resizeDashboardCharts(), 100);
+    }
   }
   if (tabName === 'heatmap') {
     if (!STATE.heatmapInited) {
@@ -218,7 +224,7 @@ async function loadDashboard() {
 function renderPOICategoryChart(pois) {
   const el = document.getElementById('chart-poi-category');
   if (!el) return;
-  const chart = echarts.init(el, 'dark');
+  const chart = echarts.getInstanceByDom(el) || echarts.init(el, 'dark');
   STATE.dashboardCharts['poi-category'] = chart;
 
   const catMap = {};
@@ -251,7 +257,7 @@ function renderPOICategoryChart(pois) {
 function renderTrafficDistrictChart(roads) {
   const el = document.getElementById('chart-traffic-district');
   if (!el) return;
-  const chart = echarts.init(el, 'dark');
+  const chart = echarts.getInstanceByDom(el) || echarts.init(el, 'dark');
   STATE.dashboardCharts['traffic-district'] = chart;
 
   const sorted = [...roads].sort((a, b) => b.daily_flow - a.daily_flow).slice(0, 10);
@@ -294,7 +300,7 @@ function renderTrafficDistrictChart(roads) {
 function renderEVDemandChart(pois) {
   const el = document.getElementById('chart-ev-demand');
   if (!el) return;
-  const chart = echarts.init(el, 'dark');
+  const chart = echarts.getInstanceByDom(el) || echarts.init(el, 'dark');
   STATE.dashboardCharts['ev-demand'] = chart;
 
   const buckets = { '9-10分': 0, '7-9分': 0, '5-7分': 0, '3-5分': 0, '0-3分': 0 };
