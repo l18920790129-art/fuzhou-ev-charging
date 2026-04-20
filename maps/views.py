@@ -228,15 +228,16 @@ def check_location(request):
     else:
         lat, lng = float(request.GET.get('lat')), float(request.GET.get('lng'))
 
-    conflicts = []
+    local_conflicts = []
 
     # 1) 本地禁区：多边形精确检测 + 圆形兜底
     for zone in ExclusionZone.objects.all():
         if check_zone_conflict(lat, lng, zone):
             dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
-            conflicts.append({
+            local_conflicts.append({
                 "name": zone.name,
                 "type": zone.get_zone_type_display(),
+                "zone_type": zone.zone_type,
                 "distance_km": round(dist, 3),
                 "source": "local_zone",
             })
@@ -246,23 +247,39 @@ def check_location(request):
     if amap_environment_check is not None:
         try:
             amap_info = amap_environment_check(lat, lng)
-            if amap_info and amap_info.get("is_restricted"):
-                if amap_info.get("is_water"):
-                    conflicts.append({
-                        "name": amap_info.get("reason") or "高德识别：水域/河道",
-                        "type": "水域",
-                        "distance_km": 0.0,
-                        "source": "amap",
-                    })
-                elif amap_info.get("is_forest"):
-                    conflicts.append({
-                        "name": amap_info.get("reason") or "高德识别：林地/保护区",
-                        "type": "林地",
-                        "distance_km": 0.0,
-                        "source": "amap",
-                    })
         except Exception as e:
             logger.warning("amap environment_check failed: %s", e)
+
+    # 3) 合并冲突列表：
+    #    - 对于本地水域禁区：若高德明确判定为陆地（is_water=False且has_land_context），则不计入冲突
+    #    - 对于非水域禁区（林地/保护区/军事区等）：直接计入冲突
+    #    - 高德判定为水域/林地：将高德冲突加入
+    conflicts = []
+    amap_is_land = (amap_info and not amap_info.get("is_water") and not amap_info.get("is_forest")
+                    and amap_info.get("land_aois") or amap_info and not amap_info.get("is_restricted"))
+
+    for c in local_conflicts:
+        # 水域禁区：高德确认为陆地则跳过（高德权威更高）
+        if c["zone_type"] == "water" and amap_is_land:
+            continue
+        # 其他禁区（林地/保护区/军事区等）或高德未返回陆地确认：保留冲突
+        conflicts.append({k: v for k, v in c.items() if k != "zone_type"})
+
+    if amap_info and amap_info.get("is_restricted"):
+        if amap_info.get("is_water"):
+            conflicts.append({
+                "name": amap_info.get("reason") or "高德识别：水域/河道",
+                "type": "水域",
+                "distance_km": 0.0,
+                "source": "amap",
+            })
+        elif amap_info.get("is_forest"):
+            conflicts.append({
+                "name": amap_info.get("reason") or "高德识别：林地/保护区",
+                "type": "林地",
+                "distance_km": 0.0,
+                "source": "amap",
+            })
 
     is_valid = len(conflicts) == 0
     resp = {
