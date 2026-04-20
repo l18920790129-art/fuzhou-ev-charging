@@ -81,6 +81,20 @@ def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> fl
     return R * c
 
 
+def point_in_polygon_agent(lat: float, lng: float, polygon_coords: list) -> bool:
+    """射线法判断点是否在多边形内。polygon_coords 格式：[[lng,lat], ...] (GeoJSON顺序)"""
+    n = len(polygon_coords)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon_coords[i][0], polygon_coords[i][1]  # lng, lat
+        xj, yj = polygon_coords[j][0], polygon_coords[j][1]
+        if ((yi > lat) != (yj > lat)) and (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
 # ============================================================
 # Agent Tools（工具函数）
 # ============================================================
@@ -624,11 +638,23 @@ def quick_score_location(lat: float, lng: float) -> Dict[str, Any]:
     """快速计算选址评分（用于地图实时反馈）"""
     from maps.models import POIData, TrafficFlow, ExclusionZone, CandidateLocation
     
-    # 禁止区域检查（本地约束 + 高德语义判定）
+    # 禁止区域检查（多边形精确检测 + 圆形兜底 + 高德语义判定）
     zones = ExclusionZone.objects.all()
     for zone in zones:
-        dist = haversine_distance(lat, lng, zone.center_lat, zone.center_lng)
-        if dist <= zone.radius_km:
+        in_zone = False
+        # 多边形边界检测（精确）
+        try:
+            boundary = json.loads(zone.boundary_json)
+            if boundary and boundary.get('type') == 'Polygon':
+                coords = boundary['coordinates'][0]
+                in_zone = point_in_polygon_agent(lat, lng, coords)
+        except Exception:
+            pass
+        # 圆形兜底
+        if not in_zone:
+            dist = haversine_distance(lat, lng, zone.center_lat, zone.center_lng)
+            in_zone = dist <= zone.radius_km
+        if in_zone:
             return {
                 "total_score": 0,
                 "poi_score": 0,

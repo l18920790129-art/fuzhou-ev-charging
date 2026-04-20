@@ -34,6 +34,36 @@ def haversine(lat1, lng1, lat2, lng2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 
+def point_in_polygon(lat, lng, polygon_coords):
+    """射线法判断点是否在多边形内。polygon_coords 格式：[[lng,lat], ...] (GeoJSON顺序)"""
+    n = len(polygon_coords)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon_coords[i][0], polygon_coords[i][1]  # lng, lat
+        xj, yj = polygon_coords[j][0], polygon_coords[j][1]
+        if ((yi > lat) != (yj > lat)) and (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def check_zone_conflict(lat, lng, zone):
+    """多边形优先 + 圆形兜底的禁区冲突检测"""
+    # 优先使用多边形边界（精确）
+    try:
+        boundary = json.loads(zone.boundary_json)
+        if boundary and boundary.get('type') == 'Polygon':
+            coords = boundary['coordinates'][0]
+            if point_in_polygon(lat, lng, coords):
+                return True
+    except Exception:
+        pass
+    # 兜底：圆形距离检测
+    dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
+    return dist <= zone.radius_km
+
+
 def geo_entities(request):
     """获取地理实体列表"""
     entity_type = request.GET.get('type', '')
@@ -200,10 +230,10 @@ def check_location(request):
 
     conflicts = []
 
-    # 1) 本地禁区圆形约束
+    # 1) 本地禁区：多边形精确检测 + 圆形兜底
     for zone in ExclusionZone.objects.all():
-        dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
-        if dist <= zone.radius_km:
+        if check_zone_conflict(lat, lng, zone):
+            dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
             conflicts.append({
                 "name": zone.name,
                 "type": zone.get_zone_type_display(),
@@ -360,12 +390,12 @@ def quick_score_location(request):
     except (ValueError, TypeError, json.JSONDecodeError):
         return JsonResponse({"error": "Invalid parameters"}, status=400)
 
-    # 1. 检查禁止区域（本地约束 + 高德语义判定）
+    # 1. 检查禁止区域（多边形精确检测 + 圆形兜底 + 高德语义判定）
     zones = ExclusionZone.objects.all()
     conflicts = []
     for zone in zones:
-        dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
-        if dist <= zone.radius_km:
+        if check_zone_conflict(lat, lng, zone):
+            dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
             conflicts.append({"name": zone.name, "type": zone.get_zone_type_display(), "distance_km": round(dist, 3)})
 
     amap_info = None

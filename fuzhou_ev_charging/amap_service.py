@@ -416,12 +416,51 @@ def _place_text_paged(keywords: str, types: str, city: str,
     return out
 
 
+# 各类POI的充电需求评分映射（基于高德类型编码对应充电需求强度）
+_EV_DEMAND_SCORE_MAP = {
+    "shopping_mall":    8.5,   # 购物中心 - 高停留时间
+    "supermarket":      7.5,   # 超市
+    "office_building":  8.8,   # 商务楼宇 - 通勤充电
+    "hospital":         7.2,   # 医院
+    "school":           7.8,   # 学校
+    "hotel":            7.0,   # 酒店
+    "restaurant":       6.0,   # 餐饮
+    "gas_station":      6.5,   # 加油站
+    "parking_lot":      8.0,   # 停车场
+    "subway_station":   9.2,   # 地铁站 - 最高需求
+    "bus_station":      8.0,   # 公交站
+    "residential_area": 7.5,   # 住宅区
+    "scenic_spot":      6.5,   # 景区
+    "sports_center":    7.0,   # 体育场馆
+}
+
+# 日均人流默认值（各类型平均估算）
+_DAILY_FLOW_MAP = {
+    "shopping_mall":    25000,
+    "supermarket":      12000,
+    "office_building":  15000,
+    "hospital":         10000,
+    "school":           18000,
+    "hotel":            5000,
+    "restaurant":       3000,
+    "gas_station":      800,
+    "parking_lot":      8000,
+    "subway_station":   35000,
+    "bus_station":      20000,
+    "residential_area": 6000,
+    "scenic_spot":      12000,
+    "sports_center":    5000,
+}
+
+
 def _normalize_poi(p: dict, fe_category: str = "", fe_cat_label: str = "") -> Optional[dict]:
     try:
         loc = (p.get("location") or "").split(",")
         plng, plat = float(loc[0]), float(loc[1])
     except Exception:
         return None
+    ev_score = _EV_DEMAND_SCORE_MAP.get(fe_category, 5.0)
+    daily_flow = _DAILY_FLOW_MAP.get(fe_category, 5000)
     return {
         "id": p.get("id") or f"{plng:.5f},{plat:.5f}",
         "name": p.get("name", ""),
@@ -436,9 +475,9 @@ def _normalize_poi(p: dict, fe_category: str = "", fe_cat_label: str = "") -> Op
         "category_display": fe_cat_label,
         # 以下字段是为兼容老前端代码（POIData 结构）
         "district": p.get("adname") or "",
-        "daily_flow": 0,
-        "ev_demand_score": 0,
-        "influence_weight": 0,
+        "daily_flow": daily_flow,
+        "ev_demand_score": ev_score,
+        "influence_weight": round(ev_score / 10.0 * 3.0, 1),
     }
 
 
