@@ -1436,6 +1436,7 @@ function showReportDetail(data) {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
         <h2 style="font-size:16px;font-weight:700">${data.title || '选址分析报告'}</h2>
         <div style="display:flex;gap:8px">
+          ${data.has_pdf ? `<button onclick="downloadReportPDF('${data.report_id}')" style="padding:6px 14px;background:linear-gradient(135deg,#3b82f6,#10b981);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">⬇️ 下载PDF</button>` : ''}
         </div>
       </div>
 
@@ -1605,4 +1606,19 @@ function showToast(msg, type = 'info') {
     toast.classList.add('removing');
     setTimeout(() => toast.remove(), 300);
   }, 3500);
+}
+
+// PDF 下载函数
+function downloadReportPDF(reportId) {
+  if (!reportId) { showToast('报告ID无效', 'error'); return; }
+  const url = `${API.reports}/${reportId}/pdf/`;
+  // 创建隐藏的 <a> 标签触发下载
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `充电桩选址报告_${reportId}.pdf`;
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('PDF下载已开始', 'success');
 }

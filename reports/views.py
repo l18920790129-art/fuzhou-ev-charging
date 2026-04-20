@@ -203,18 +203,28 @@ def get_report(request, report_id):
         r = SelectionReport.objects.get(report_id=report_id)
         return JsonResponse({"report_id":r.report_id,"title":r.title,"selected_lat":r.selected_lat,"selected_lng":r.selected_lng,
             "total_score":r.total_score,"content":r.report_content,"alternatives":r.alternative_locations,
-            "has_pdf":bool(r.pdf_path),"created_at":r.created_at.isoformat()})
+            "has_pdf":bool(r.pdf_path),"created_at":r.created_at.isoformat()})  # has_pdf只要pdf_path有记录就为True，下载时会自动重新生成
     except SelectionReport.DoesNotExist: return JsonResponse({"error":"报告不存在"},status=404)
 
 def download_pdf(request, report_id):
     try:
         r = SelectionReport.objects.get(report_id=report_id)
+        # 如果文件已存在，直接返回
         if r.pdf_path and os.path.exists(r.pdf_path):
-            resp = FileResponse(open(r.pdf_path,"rb"),content_type="application/pdf")
+            resp = FileResponse(open(r.pdf_path, "rb"), content_type="application/pdf")
             resp["Content-Disposition"] = f"attachment; filename=charging_report_{report_id}.pdf"
             return resp
-        return JsonResponse({"error":"PDF不存在"},status=404)
-    except SelectionReport.DoesNotExist: return JsonResponse({"error":"报告不存在"},status=404)
+        # 文件不存在（服务重启后丢失），重新生成
+        pdf_path = generate_pdf_report(r)
+        if pdf_path:
+            r.pdf_path = pdf_path
+            r.save(update_fields=['pdf_path'])
+            resp = FileResponse(open(pdf_path, "rb"), content_type="application/pdf")
+            resp["Content-Disposition"] = f"attachment; filename=charging_report_{report_id}.pdf"
+            return resp
+        return JsonResponse({"error": "PDF生成失败，请重新生成报告"}, status=500)
+    except SelectionReport.DoesNotExist:
+        return JsonResponse({"error": "报告不存在"}, status=404)
 
 def report_list(request):
     session_id = request.GET.get("session_id","")
