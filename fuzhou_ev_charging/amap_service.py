@@ -377,15 +377,19 @@ def _city_cache_get(k: str):
     v = _CITY_CACHE.get(k)
     if not v:
         return None
-    ts, val = v
-    if time.time() - ts > _CITY_CACHE_TTL:
+    ts, val, ttl = v if len(v) == 3 else (v[0], v[1], _CITY_CACHE_TTL)
+    if time.time() - ts > ttl:
         _CITY_CACHE.pop(k, None)
         return None
     return val
 
 
-def _city_cache_set(k: str, val: Any):
-    _CITY_CACHE[k] = (time.time(), val)
+def _city_cache_set(k: str, val: Any, ttl: Optional[float] = None):
+    _CITY_CACHE[k] = (time.time(), val, ttl if ttl is not None else _CITY_CACHE_TTL)
+
+
+def _city_cache_set_short(k: str, val: Any, ttl: float = 60):
+    _city_cache_set(k, val, ttl=ttl)
 
 
 def _place_text_paged(keywords: str, types: str, city: str,
@@ -484,9 +488,13 @@ def fetch_city_pois(city: str = "福州", limit_per_cat: int = 60) -> List[dict]
             seen.add(np["id"])
             merged.append(np)
 
-    # 安全门槛：总量太少则不写缓存，让下次请求重新拉取
-    if len(merged) >= max(100, int(limit_per_cat * len(POI_BIG_CATEGORIES) * 0.4)):
+    # 优质门槛：总量达到理论值的 85% 才写入 10 分钟优质缓存；
+    # 否则写入更短的临时缓存（60秒），避免频繁打高德又不会闷在小量数据上
+    total_target = limit_per_cat * len(POI_BIG_CATEGORIES)
+    if len(merged) >= int(total_target * 0.85):
         _city_cache_set(ck, merged)
+    elif len(merged) >= 100:
+        _city_cache_set_short(ck, merged, ttl=60)
     return merged
 
 
