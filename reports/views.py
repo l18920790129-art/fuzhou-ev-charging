@@ -72,13 +72,22 @@ def generate_pdf_report(report):
         os.makedirs(media_dir, exist_ok=True)
         pdf_path = os.path.join(media_dir, f"{report.report_id}.pdf")
         font_registered = False
-        for fp in ["/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-                   "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                   "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"]:
+        # 优先使用项目内打包的字体（确保 Render 等云环境可用）
+        project_font = os.path.join(settings.BASE_DIR, "static", "fonts", "wqy-microhei.ttc")
+        font_search_paths = [
+            project_font,
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ]
+        for fp in font_search_paths:
             if os.path.exists(fp):
                 try:
-                    pdfmetrics.registerFont(TTFont("CF", fp)); font_registered = True; break
-                except: continue
+                    pdfmetrics.registerFont(TTFont("CF", fp))
+                    font_registered = True
+                    break
+                except Exception:
+                    continue
         fn = "CF" if font_registered else "Helvetica"
         doc = SimpleDocTemplate(pdf_path, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
         ts = ParagraphStyle; title_s = ts("T", fontName=fn, fontSize=18, spaceAfter=12, textColor=colors.HexColor("#1a3a5c"), alignment=1)

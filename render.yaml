@@ -12,6 +12,8 @@ services:
         sync: false
       - key: AMAP_API_KEY
         value: 283b21e285a807bf7bda4cf43e838a26
+      - key: AMAP_WEB_KEY
+        value: 65e3f384624e6b99a446fba7090c8ea9
       - key: SECRET_KEY
         generateValue: true
       - key: DEBUG
