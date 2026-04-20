@@ -496,9 +496,14 @@ def fetch_city_charging_stations(city: str = "福州", max_pages: int = 4) -> Li
     cached = _city_cache_get(ck)
     if cached is not None:
         return cached
+    raw = _place_text_paged("充电站", "011100", city, max_pages=max_pages, offset=25)
+    if len(raw) < max_pages * 10:
+        time.sleep(0.3)
+        retry = _place_text_paged("充电站", "011100", city, max_pages=max_pages, offset=25)
+        if len(retry) > len(raw):
+            raw = retry
     seen = set()
     out: List[dict] = []
-    raw = _place_text_paged("充电站", "011100", city, max_pages=max_pages, offset=25)
     for p in raw:
         np = _normalize_poi(p, "charging_station", "充电站")
         if not np:
@@ -512,7 +517,8 @@ def fetch_city_charging_stations(city: str = "福州", max_pages: int = 4) -> Li
             "operator": np["name"].split("(")[0].split("汽车")[0] or "",
         })
         out.append(np)
-    _city_cache_set(ck, out)
+    if len(out) >= 40:
+        _city_cache_set(ck, out)
     return out
 
 
@@ -536,7 +542,14 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
 
     def run(job):
         kw, tc, city_, pages, ztype, radius_km, label = job
-        return ztype, radius_km, label, _place_text_paged(kw, tc, city_, max_pages=pages, offset=25)
+        out = _place_text_paged(kw, tc, city_, max_pages=pages, offset=25)
+        # 短量重试一次，例如高德 QPS 拖油
+        if len(out) < max(10, pages * 8):
+            time.sleep(0.3)
+            retry = _place_text_paged(kw, tc, city_, max_pages=pages, offset=25)
+            if len(retry) > len(out):
+                out = retry
+        return ztype, radius_km, label, out
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         batches = list(ex.map(run, jobs))
@@ -565,7 +578,9 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
                 "source": "amap-v3",
             })
 
-    _city_cache_set(ck, out)
+    # 门槛：总量太少（通常高德抽风）不写缓存
+    if len(out) >= 60:
+        _city_cache_set(ck, out)
     return out
 
 
