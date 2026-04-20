@@ -452,16 +452,29 @@ def _fetch_one_category(typecode: str, label: str, fe_cat: str,
 
 
 def fetch_city_pois(city: str = "福州", limit_per_cat: int = 60) -> List[dict]:
-    """按类别并行拉取整个福州市 POI，合并去重"""
+    """按类别并行拉取整个福州市 POI，合并去重。
+
+    对任何一个类别，若首次拉取结果 < 0.6 * limit_per_cat 则再试一次
+    （例如高德偶发的 QPS 拖油/网络抖动），保证总量稳定。
+    """
     ck = f"city_pois:{city}:{limit_per_cat}"
     cached = _city_cache_get(ck)
     if cached is not None:
         return cached
+
+    def _one(args):
+        tc, label, fe_cat = args
+        out = _fetch_one_category(tc, label, fe_cat, city=city, limit_per_cat=limit_per_cat)
+        if len(out) < max(5, int(limit_per_cat * 0.6)):
+            time.sleep(0.3)
+            retry = _fetch_one_category(tc, label, fe_cat, city=city, limit_per_cat=limit_per_cat)
+            if len(retry) > len(out):
+                out = retry
+        return out
+
     with ThreadPoolExecutor(max_workers=6) as ex:
-        results = list(ex.map(
-            lambda args: _fetch_one_category(*args, city=city, limit_per_cat=limit_per_cat),
-            POI_BIG_CATEGORIES,
-        ))
+        results = list(ex.map(_one, POI_BIG_CATEGORIES))
+
     seen = set()
     merged: List[dict] = []
     for batch in results:
@@ -470,7 +483,10 @@ def fetch_city_pois(city: str = "福州", limit_per_cat: int = 60) -> List[dict]
                 continue
             seen.add(np["id"])
             merged.append(np)
-    _city_cache_set(ck, merged)
+
+    # 安全门槛：总量太少则不写缓存，让下次请求重新拉取
+    if len(merged) >= max(100, int(limit_per_cat * len(POI_BIG_CATEGORIES) * 0.4)):
+        _city_cache_set(ck, merged)
     return merged
 
 
