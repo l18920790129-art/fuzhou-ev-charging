@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -328,3 +330,252 @@ def fetch_nearby_pois(lat: float, lng: float, radius_m: int = 2000, limit: int =
             continue
     items.sort(key=lambda x: x["distance_km"])
     return items[:limit]
+
+
+# ======================================================================
+# 城市级批量拉取（2026-04 新增）：POI / 充电站 / 水域禁区
+# ----------------------------------------------------------------------
+# 原则：
+#   1. 所有数据来自高德 V3 REST，不读取本地 DB；
+#   2. 使用长缓存（15 分钟）避免频繁请求高德；
+#   3. 多次分页合并、按 POI id 去重；
+#   4. 保证对 "整个福州市" 覆盖（按行政区分批查询）。
+# ======================================================================
+
+FUZHOU_DISTRICTS = [
+    "鼓楼区", "台江区", "仓山区", "晋安区", "马尾区",
+    "长乐区", "闽侯县", "连江县", "福清市", "永泰县",
+    "罗源县", "闽清县", "平潭县",
+]
+
+# 前端展示用的大类 => (高德 typecode, 展示名, 前端 category key)
+POI_BIG_CATEGORIES = [
+    ("060100", "购物中心", "shopping_mall"),
+    ("060400", "超市",     "supermarket"),
+    ("120200", "商务楼宇", "office_building"),
+    ("090100", "综合医院", "hospital"),
+    ("141200", "学校",     "school"),
+    ("100000", "酒店",     "hotel"),
+    ("050000", "餐饮",     "restaurant"),
+    ("150500", "地铁站",   "subway_station"),
+    ("150700", "公交站",   "bus_station"),
+    ("120300", "住宅区",   "residential_area"),
+    ("110000", "风景名胜", "scenic_spot"),
+    ("080000", "体育场馆", "sports_center"),
+]
+
+# 水域 / 林地 类别编码（作为禁区来源）
+EXCLUSION_WATER_TYPES = ["190204", "190205", "190206", "190207"]
+EXCLUSION_FOREST_TYPES = ["110202"]  # 国家级景点 / 森林公园
+EXCLUSION_AIRPORT_TYPES = ["150200"]  # 机场相关
+
+_CITY_CACHE: Dict[str, Tuple[float, Any]] = {}
+_CITY_CACHE_TTL = 15 * 60  # 15 分钟
+
+
+def _city_cache_get(k: str):
+    v = _CITY_CACHE.get(k)
+    if not v:
+        return None
+    ts, val = v
+    if time.time() - ts > _CITY_CACHE_TTL:
+        _CITY_CACHE.pop(k, None)
+        return None
+    return val
+
+
+def _city_cache_set(k: str, val: Any):
+    _CITY_CACHE[k] = (time.time(), val)
+
+
+def _place_text_paged(keywords: str, types: str, city: str,
+                      max_pages: int = 3, offset: int = 25) -> List[dict]:
+    """多页拉取并合并，单次出错立即结束（高德 V3 强制 page*offset<=2000 + count<=900）"""
+    out: List[dict] = []
+    for page in range(1, max_pages + 1):
+        params = {
+            "keywords": keywords or "",
+            "types": types or "",
+            "city": city,
+            "citylimit": "true",
+            "offset": offset,
+            "page": page,
+            "extensions": "base",
+        }
+        data = _get("https://restapi.amap.com/v3/place/text", params) or {}
+        pois = data.get("pois") or []
+        if not pois:
+            break
+        out.extend(pois)
+        if len(pois) < offset:
+            break  # 已经最后一页
+    return out
+
+
+def _normalize_poi(p: dict, fe_category: str = "", fe_cat_label: str = "") -> Optional[dict]:
+    try:
+        loc = (p.get("location") or "").split(",")
+        plng, plat = float(loc[0]), float(loc[1])
+    except Exception:
+        return None
+    return {
+        "id": p.get("id") or f"{plng:.5f},{plat:.5f}",
+        "name": p.get("name", ""),
+        "type": p.get("type", ""),
+        "typecode": p.get("typecode", ""),
+        "lat": plat,
+        "lng": plng,
+        "address": p.get("address") or "",
+        "adname": p.get("adname") or "",
+        "cityname": p.get("cityname") or "",
+        "category": fe_category,
+        "category_display": fe_cat_label,
+        # 以下字段是为兼容老前端代码（POIData 结构）
+        "district": p.get("adname") or "",
+        "daily_flow": 0,
+        "ev_demand_score": 0,
+        "influence_weight": 0,
+    }
+
+
+def _fetch_one_category(typecode: str, label: str, fe_cat: str,
+                        city: str, limit_per_cat: int) -> List[dict]:
+    pages = max(1, (limit_per_cat + 24) // 25)
+    out: List[dict] = []
+    for p in _place_text_paged("", typecode, city, max_pages=pages, offset=25):
+        np = _normalize_poi(p, fe_cat, label)
+        if np:
+            out.append(np)
+            if len(out) >= limit_per_cat:
+                break
+    return out
+
+
+def fetch_city_pois(city: str = "福州", limit_per_cat: int = 60) -> List[dict]:
+    """按类别并行拉取整个福州市 POI，合并去重"""
+    ck = f"city_pois:{city}:{limit_per_cat}"
+    cached = _city_cache_get(ck)
+    if cached is not None:
+        return cached
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(
+            lambda args: _fetch_one_category(*args, city=city, limit_per_cat=limit_per_cat),
+            POI_BIG_CATEGORIES,
+        ))
+    seen = set()
+    merged: List[dict] = []
+    for batch in results:
+        for np in batch:
+            if np["id"] in seen:
+                continue
+            seen.add(np["id"])
+            merged.append(np)
+    _city_cache_set(ck, merged)
+    return merged
+
+
+def fetch_city_charging_stations(city: str = "福州", max_pages: int = 4) -> List[dict]:
+    """整市充电站 (typecode=011100)"""
+    ck = f"city_charging:{city}:{max_pages}"
+    cached = _city_cache_get(ck)
+    if cached is not None:
+        return cached
+    seen = set()
+    out: List[dict] = []
+    raw = _place_text_paged("充电站", "011100", city, max_pages=max_pages, offset=25)
+    for p in raw:
+        np = _normalize_poi(p, "charging_station", "充电站")
+        if not np:
+            continue
+        if np["id"] in seen:
+            continue
+        seen.add(np["id"])
+        np.update({
+            "status": "existing",
+            "total_score": 0,
+            "operator": np["name"].split("(")[0].split("汽车")[0] or "",
+        })
+        out.append(np)
+    _city_cache_set(ck, out)
+    return out
+
+
+def fetch_city_exclusions(city: str = "福州") -> List[dict]:
+    """
+    获取禁区：主要的水域 / 森林公园 / 机场。
+    高德返回 POI 是点，我们将其近似为半径=0.5~1.5km 的圆形禁区。并行拉取。
+    """
+    ck = f"city_exclusions:{city}"
+    cached = _city_cache_get(ck)
+    if cached is not None:
+        return cached
+
+    jobs: List[Tuple[str, str, str, int, str, float, str]] = []
+    # (keywords, types, city, max_pages, ztype, radius_km, label)
+    for tc in EXCLUSION_WATER_TYPES:
+        jobs.append(("", tc, city, 3, "water", 0.5, "水域/河道"))
+    jobs.append(("森林公园", "", city, 2, "forest", 1.0, "林地/保护区"))
+    jobs.append(("自然保护区", "", city, 1, "forest", 1.2, "自然保护区"))
+    jobs.append(("机场", "150200", city, 1, "airport", 2.0, "机场管控区"))
+
+    def run(job):
+        kw, tc, city_, pages, ztype, radius_km, label = job
+        return ztype, radius_km, label, _place_text_paged(kw, tc, city_, max_pages=pages, offset=25)
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        batches = list(ex.map(run, jobs))
+
+    out: List[dict] = []
+    seen_names = set()
+    for ztype, radius_km, label, pois in batches:
+        for p in pois:
+            np = _normalize_poi(p)
+            if not np:
+                continue
+            name = np["name"]
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            out.append({
+                "id": np["id"],
+                "name": name,
+                "zone_type": ztype,
+                "zone_type_display": label,
+                "center_lat": np["lat"],
+                "center_lng": np["lng"],
+                "radius_km": radius_km,
+                "description": np.get("address") or np.get("adname"),
+                "boundary": None,
+                "source": "amap-v3",
+            })
+
+    _city_cache_set(ck, out)
+    return out
+
+
+# ----------------------------------------------------------------------
+# 启动预热：在后台线程里将三类城市级数据提前装缓存
+# ----------------------------------------------------------------------
+_warmup_lock = threading.Lock()
+_warmup_done = False
+
+
+def warm_city_caches(city: str = "福州"):
+    """后台预热：Django 启动时调用，用户首次打开地图即命中缓存。"""
+    global _warmup_done
+    with _warmup_lock:
+        if _warmup_done:
+            return
+        _warmup_done = True
+
+    def _work():
+        try:
+            logger.info("AMap warmup start for %s", city)
+            fetch_city_charging_stations(city)
+            fetch_city_exclusions(city)
+            fetch_city_pois(city)
+            logger.info("AMap warmup done")
+        except Exception as e:
+            logger.warning("AMap warmup failed: %s", e)
+
+    threading.Thread(target=_work, daemon=True, name="amap-warmup").start()

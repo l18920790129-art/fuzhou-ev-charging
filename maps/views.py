@@ -9,11 +9,19 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from .models import POIData, TrafficFlow, ExclusionZone, GeoEntity, CandidateLocation
 
-# 高德环境语义检查（2026-04 新增）
+# 高德环境语义检查 + 城市级真实数据拉取（2026-04 新增）
 try:
-    from fuzhou_ev_charging.amap_service import environment_check as amap_environment_check
+    from fuzhou_ev_charging.amap_service import (
+        environment_check as amap_environment_check,
+        fetch_city_pois as amap_fetch_city_pois,
+        fetch_city_charging_stations as amap_fetch_city_stations,
+        fetch_city_exclusions as amap_fetch_city_exclusions,
+    )
 except Exception:  # pragma: no cover
     amap_environment_check = None
+    amap_fetch_city_pois = None
+    amap_fetch_city_stations = None
+    amap_fetch_city_exclusions = None
 
 logger = logging.getLogger(__name__)
 
@@ -37,36 +45,63 @@ def geo_entities(request):
 
 
 def poi_list(request):
-    """获取POI数据列表"""
+    """获取POI数据列表（2026-04：数据源改为高德 V3 Web 服务，覆盖整个福州市）
+
+    支持的查询参数保持向后兼容：
+        - category: 按前端 category key 过滤
+        - district: 按行政区名包含过滤（高德 adname）
+        - lat/lng/radius: 以选点为中心筛选半径内 POI
+    """
     category = request.GET.get('category', '')
     district = request.GET.get('district', '')
     lat = request.GET.get('lat')
     lng = request.GET.get('lng')
     radius = float(request.GET.get('radius', 2.0))
 
-    qs = POIData.objects.all()
-    if category:
-        qs = qs.filter(category=category)
-    if district:
-        qs = qs.filter(district__icontains=district)
+    pois: list = []
+    if amap_fetch_city_pois is not None:
+        try:
+            pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
+        except Exception as e:
+            logger.warning("amap_fetch_city_pois failed: %s", e)
+            pois = []
 
-    pois = list(qs)
+    # 若高德拉取完全失败（如网络故障），兜底回本地 POIData 表，保证页面不崩
+    if not pois:
+        qs = POIData.objects.all()
+        pois = [{
+            "id": p.id, "name": p.name, "category": p.category,
+            "category_display": p.get_category_display(),
+            "lat": p.latitude, "lng": p.longitude, "district": p.district,
+            "daily_flow": p.daily_flow, "ev_demand_score": p.ev_demand_score,
+            "influence_weight": p.influence_weight,
+            "type": "", "typecode": "", "address": "", "adname": p.district,
+        } for p in qs]
+
+    # 过滤：category
+    if category:
+        pois = [p for p in pois if (p.get("category") or "") == category]
+    # 过滤：district
+    if district:
+        pois = [p for p in pois if district in (p.get("district") or p.get("adname") or "")]
+
+    # 过滤：半径
     if lat and lng:
         lat, lng = float(lat), float(lng)
-        pois = [(p, haversine(lat, lng, p.latitude, p.longitude)) for p in pois]
-        pois = [(p, d) for p, d in pois if d <= radius]
-        pois.sort(key=lambda x: x[1])
-        data = [{"id": p.id, "name": p.name, "category": p.category, "category_display": p.get_category_display(),
-                 "lat": p.latitude, "lng": p.longitude, "district": p.district,
-                 "daily_flow": p.daily_flow, "ev_demand_score": p.ev_demand_score,
-                 "influence_weight": p.influence_weight, "distance_km": round(d, 3)} for p, d in pois]
-    else:
-        data = [{"id": p.id, "name": p.name, "category": p.category, "category_display": p.get_category_display(),
-                 "lat": p.latitude, "lng": p.longitude, "district": p.district,
-                 "daily_flow": p.daily_flow, "ev_demand_score": p.ev_demand_score,
-                 "influence_weight": p.influence_weight} for p in pois]
+        enriched = []
+        for p in pois:
+            try:
+                d = haversine(lat, lng, float(p["lat"]), float(p["lng"]))
+            except Exception:
+                continue
+            if d <= radius:
+                pp = dict(p)
+                pp["distance_km"] = round(d, 3)
+                enriched.append(pp)
+        enriched.sort(key=lambda x: x["distance_km"])
+        pois = enriched
 
-    return JsonResponse({"data": data, "total": len(data)})
+    return JsonResponse({"data": pois, "total": len(pois), "source": "amap-v3"})
 
 
 def traffic_flow(request):
@@ -108,22 +143,44 @@ def traffic_flow(request):
 
 
 def exclusion_zones(request):
-    """获取禁止选址区域"""
-    qs = ExclusionZone.objects.all()
-    data = []
-    for z in qs:
+    """获取禁止选址区域（2026-04：数据源改为高德 V3 水域/林地/机场 POI + 原有本地圆形兜底）"""
+    data: list = []
+
+    # 1) 高德真实数据：河流/湖泊/水库/森林公园/机场
+    if amap_fetch_city_exclusions is not None:
+        try:
+            for z in amap_fetch_city_exclusions(city="福州") or []:
+                data.append({
+                    "id": f"amap_{z['id']}",
+                    "name": z["name"],
+                    "zone_type": z["zone_type"],
+                    "zone_type_display": z["zone_type_display"],
+                    "center_lat": z["center_lat"],
+                    "center_lng": z["center_lng"],
+                    "radius_km": z["radius_km"],
+                    "description": z.get("description", ""),
+                    "boundary": z.get("boundary"),
+                    "source": "amap-v3",
+                })
+        except Exception as e:
+            logger.warning("amap_fetch_city_exclusions failed: %s", e)
+
+    # 2) 本地补充：保留原 ExclusionZone 作为人工兜底（例如军事/医疗重地）
+    for z in ExclusionZone.objects.all():
         item = {
-            "id": z.id, "name": z.name,
+            "id": f"local_{z.id}", "name": z.name,
             "zone_type": z.zone_type, "zone_type_display": z.get_zone_type_display(),
             "center_lat": z.center_lat, "center_lng": z.center_lng,
             "radius_km": z.radius_km, "description": z.description,
+            "source": "local",
         }
         try:
             item["boundary"] = json.loads(z.boundary_json)
-        except:
+        except Exception:
             item["boundary"] = None
         data.append(item)
-    return JsonResponse({"data": data})
+
+    return JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"})
 
 
 @csrf_exempt
@@ -243,12 +300,49 @@ def heatmap_data(request):
 
 
 def candidates_list(request):
-    """获取候选位置列表"""
+    """获取候选位置/现有充电站列表
+
+    2026-04：现有充电站数据源改为高德 V3 POI（typecode=011100），整市覆盖。
+    candidates（status='candidate'）仍从本地表取，两者合并返回。
+    """
     from .models import CandidateLocation
-    qs = CandidateLocation.objects.all()
-    data = [{"id": c.id, "name": c.name, "lat": c.latitude, "lng": c.longitude,
-             "status": c.status, "total_score": c.total_score, "address": c.address} for c in qs]
-    return JsonResponse({"data": data})
+    data: list = []
+
+    # 1) 高德真实充电站
+    if amap_fetch_city_stations is not None:
+        try:
+            for s in amap_fetch_city_stations(city="福州", max_pages=4) or []:
+                data.append({
+                    "id": f"amap_{s['id']}",
+                    "name": s["name"],
+                    "lat": s["lat"],
+                    "lng": s["lng"],
+                    "status": "existing",
+                    "total_score": 0,
+                    "address": s.get("address", ""),
+                    "operator": s.get("operator", ""),
+                    "district": s.get("adname", ""),
+                    "type": s.get("type", ""),
+                    "typecode": s.get("typecode", ""),
+                    "source": "amap-v3",
+                })
+        except Exception as e:
+            logger.warning("amap_fetch_city_stations failed: %s", e)
+
+    # 2) 本地 CandidateLocation（候选/规划中）
+    for c in CandidateLocation.objects.all():
+        data.append({
+            "id": f"local_{c.id}",
+            "name": c.name,
+            "lat": c.latitude,
+            "lng": c.longitude,
+            "status": c.status,
+            "total_score": c.total_score,
+            "address": c.address,
+            "source": "local",
+        })
+
+    return JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"})
 
 
 @csrf_exempt
