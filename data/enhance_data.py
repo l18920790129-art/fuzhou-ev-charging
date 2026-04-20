@@ -31,32 +31,9 @@ EXTRA_POIS = [
     {"name": "旗山大道商业带", "category": "shopping_mall", "lat": 26.0234, "lng": 119.2345, "daily_flow": 18000, "ev_demand_score": 7.8, "influence_weight": 0.8},
 ]
 
-EXTRA_ROADS = [
-    {"road_name": "福飞路", "road_level": "main_road", "center_lat": 26.0823, "center_lng": 119.2956,
-     "start_lat": 26.0923, "start_lng": 119.2856, "end_lat": 26.0723, "end_lng": 119.3056,
-     "daily_flow": 42000, "ev_ratio": 0.075,
-     "path": [[26.0923, 119.2856], [26.0873, 119.2906], [26.0823, 119.2956], [26.0773, 119.3006], [26.0723, 119.3056]]},
-    {"road_name": "福马路", "road_level": "main_road", "center_lat": 26.0678, "center_lng": 119.3678,
-     "start_lat": 26.0678, "start_lng": 119.3278, "end_lat": 26.0678, "end_lng": 119.4078,
-     "daily_flow": 38000, "ev_ratio": 0.07,
-     "path": [[26.0678, 119.3278], [26.0678, 119.3478], [26.0678, 119.3678], [26.0678, 119.3878], [26.0678, 119.4078]]},
-    {"road_name": "江滨大道（北）", "road_level": "main_road", "center_lat": 26.0623, "center_lng": 119.3234,
-     "start_lat": 26.0623, "start_lng": 119.2634, "end_lat": 26.0623, "end_lng": 119.3834,
-     "daily_flow": 48000, "ev_ratio": 0.082,
-     "path": [[26.0623, 119.2634], [26.0623, 119.2934], [26.0623, 119.3234], [26.0623, 119.3534], [26.0623, 119.3834]]},
-    {"road_name": "金山大道", "road_level": "main_road", "center_lat": 26.0312, "center_lng": 119.2756,
-     "start_lat": 26.0312, "start_lng": 119.2356, "end_lat": 26.0312, "end_lng": 119.3156,
-     "daily_flow": 35000, "ev_ratio": 0.068,
-     "path": [[26.0312, 119.2356], [26.0312, 119.2556], [26.0312, 119.2756], [26.0312, 119.2956], [26.0312, 119.3156]]},
-    {"road_name": "二环路（北段）", "road_level": "secondary_road", "center_lat": 26.0934, "center_lng": 119.3234,
-     "start_lat": 26.0934, "start_lng": 119.2834, "end_lat": 26.0934, "end_lng": 119.3634,
-     "daily_flow": 52000, "ev_ratio": 0.088,
-     "path": [[26.0934, 119.2834], [26.0934, 119.3034], [26.0934, 119.3234], [26.0934, 119.3434], [26.0934, 119.3634]]},
-    {"road_name": "三环路（西段）", "road_level": "urban_expressway", "center_lat": 26.0567, "center_lng": 119.2456,
-     "start_lat": 26.0867, "start_lng": 119.2456, "end_lat": 26.0267, "end_lng": 119.2456,
-     "daily_flow": 68000, "ev_ratio": 0.092,
-     "path": [[26.0867, 119.2456], [26.0767, 119.2456], [26.0667, 119.2456], [26.0567, 119.2456], [26.0467, 119.2456], [26.0267, 119.2456]]},
-]
+# EXTRA_ROADS 已清空：所有道路数据已在 init_fuzhou_data.py 中使用高德API真实路网折线初始化
+# 不再通过 enhance_data.py 插入额外道路，避免覆盖真实折线数据
+EXTRA_ROADS = []
 
 EXISTING_STATIONS = [
     {"name": "特来电·万达广场充电站", "lat": 26.0834, "lng": 119.2956, "total_score": 8.5},
