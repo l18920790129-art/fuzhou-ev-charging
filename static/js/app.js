@@ -567,12 +567,15 @@ function updateLocationCard(lat, lng, name) {
 function updateExclusionStatus(data) {
   const el = document.getElementById('exclusionStatus');
   if (!el) return;
+  const amap = data && data.amap;
   if (data.is_valid) {
     el.style.color = 'var(--secondary)';
-    el.textContent = '✅ 通过环境约束检查（非水域/林地）';
+    const tail = amap && amap.address ? `：${amap.address}` : '';
+    el.textContent = `✅ 通过环境约束检查（非水域/林地）${tail}`;
   } else {
     el.style.color = 'var(--danger)';
-    el.textContent = `⚠️ 位于禁止区域：${data.conflicts.map(c => c.name).join('、')}`;
+    const names = (data.conflicts || []).map(c => c.name).join('、');
+    el.textContent = `⚠️ 位于禁止区域：${names}`;
   }
 }
 

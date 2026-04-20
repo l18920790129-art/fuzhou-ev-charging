@@ -2,11 +2,20 @@
 地图相关API视图
 """
 import json
+import logging
 import math
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from .models import POIData, TrafficFlow, ExclusionZone, GeoEntity, CandidateLocation
+
+# 高德环境语义检查（2026-04 新增）
+try:
+    from fuzhou_ev_charging.amap_service import environment_check as amap_environment_check
+except Exception:  # pragma: no cover
+    amap_environment_check = None
+
+logger = logging.getLogger(__name__)
 
 
 def haversine(lat1, lng1, lat2, lng2):
@@ -119,26 +128,75 @@ def exclusion_zones(request):
 
 @csrf_exempt
 def check_location(request):
-    """检查位置是否在禁止区域内"""
+    """检查位置是否在禁止选址区域内
+
+    研判顺序（2026-04 升级）：
+        1. 本地 ExclusionZone 圆形约束（侍兼容，原有行为）
+        2. 调用高德 V3 Web 服务做语义级别的 "水域/河道/林地" 检测
+           （任一命中即视为不可选点，满足用户需求 "选点不能选在水里"）
+    """
     if request.method == 'POST':
         body = json.loads(request.body)
         lat, lng = float(body.get('lat')), float(body.get('lng'))
     else:
         lat, lng = float(request.GET.get('lat')), float(request.GET.get('lng'))
 
-    zones = ExclusionZone.objects.all()
     conflicts = []
-    for zone in zones:
+
+    # 1) 本地禁区圆形约束
+    for zone in ExclusionZone.objects.all():
         dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
         if dist <= zone.radius_km:
-            conflicts.append({"name": zone.name, "type": zone.get_zone_type_display(), "distance_km": round(dist, 3)})
+            conflicts.append({
+                "name": zone.name,
+                "type": zone.get_zone_type_display(),
+                "distance_km": round(dist, 3),
+                "source": "local_zone",
+            })
 
-    return JsonResponse({
+    # 2) 高德实时语义检测（水域 / 林地）
+    amap_info = None
+    if amap_environment_check is not None:
+        try:
+            amap_info = amap_environment_check(lat, lng)
+            if amap_info and amap_info.get("is_restricted"):
+                if amap_info.get("is_water"):
+                    conflicts.append({
+                        "name": amap_info.get("reason") or "高德识别：水域/河道",
+                        "type": "水域",
+                        "distance_km": 0.0,
+                        "source": "amap",
+                    })
+                elif amap_info.get("is_forest"):
+                    conflicts.append({
+                        "name": amap_info.get("reason") or "高德识别：林地/保护区",
+                        "type": "林地",
+                        "distance_km": 0.0,
+                        "source": "amap",
+                    })
+        except Exception as e:
+            logger.warning("amap environment_check failed: %s", e)
+
+    is_valid = len(conflicts) == 0
+    resp = {
         "lat": lat, "lng": lng,
-        "is_valid": len(conflicts) == 0,
+        "is_valid": is_valid,
         "conflicts": conflicts,
-        "message": "位置有效，可以选址" if not conflicts else f"该位置位于禁止区域内：{conflicts[0]['name']}"
-    })
+        "message": (
+            "位置有效，可以选址"
+            if is_valid else f"该位置位于禁止区域内：{conflicts[0]['name']}"
+        ),
+    }
+    if amap_info:
+        resp["amap"] = {
+            "address": amap_info.get("address", ""),
+            "district": amap_info.get("district", ""),
+            "is_water": amap_info.get("is_water", False),
+            "is_forest": amap_info.get("is_forest", False),
+            "reason": amap_info.get("reason", ""),
+            "source": amap_info.get("source", "amap-v3"),
+        }
+    return JsonResponse(resp)
 
 
 def heatmap_data(request):
@@ -208,7 +266,7 @@ def quick_score_location(request):
     except (ValueError, TypeError, json.JSONDecodeError):
         return JsonResponse({"error": "Invalid parameters"}, status=400)
 
-    # 1. 检查禁止区域
+    # 1. 检查禁止区域（本地约束 + 高德语义判定）
     zones = ExclusionZone.objects.all()
     conflicts = []
     for zone in zones:
@@ -216,13 +274,36 @@ def quick_score_location(request):
         if dist <= zone.radius_km:
             conflicts.append({"name": zone.name, "type": zone.get_zone_type_display(), "distance_km": round(dist, 3)})
 
+    amap_info = None
+    if amap_environment_check is not None:
+        try:
+            amap_info = amap_environment_check(lat, lng)
+            if amap_info and amap_info.get("is_restricted"):
+                conflicts.append({
+                    "name": amap_info.get("reason") or "高德识别：水域/林地",
+                    "type": "水域" if amap_info.get("is_water") else "林地",
+                    "distance_km": 0.0,
+                })
+        except Exception as e:
+            logger.warning("amap environment_check failed in quick_score: %s", e)
+
     if conflicts:
-        return JsonResponse({
+        payload = {
             "is_valid": False,
             "conflicts": conflicts,
             "message": f"该位置位于禁止区域内：{conflicts[0]['name']}",
-            "total_score": 0
-        })
+            "total_score": 0,
+        }
+        if amap_info:
+            payload["amap"] = {
+                "address": amap_info.get("address", ""),
+                "district": amap_info.get("district", ""),
+                "is_water": amap_info.get("is_water", False),
+                "is_forest": amap_info.get("is_forest", False),
+                "reason": amap_info.get("reason", ""),
+                "source": amap_info.get("source", "amap-v3"),
+            }
+        return JsonResponse(payload)
 
     # 2. POI密度评分（2km范围内）
     all_pois = POIData.objects.all()

@@ -122,7 +122,14 @@ REST_FRAMEWORK = {
 
 # API Key配置（从环境变量读取）
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-465f3be43b3e4a79bc0960503121cb6d')
-AMAP_API_KEY = os.environ.get('AMAP_API_KEY', '283b21e285a807bf7bda4cf43e838a26')
+# 高德地图 Key 体系（2026-04 更新，统一使用客户B两把 Key）
+#   - V1 Web端 JS API Key + 安全密钥，用于前端加载 AMap JS SDK
+#   - V3 Web服务 Key，用于后端调用 REST API（regeo / place-around / geocode）
+AMAP_JS_KEY = os.environ.get('AMAP_JS_KEY', os.environ.get('AMAP_API_KEY', '283b21e285a807bf7bda4cf43e838a26'))
+AMAP_JS_SECURITY = os.environ.get('AMAP_JS_SECURITY', '8a6ce464b341ed167f9f4d9e6ac49f42')
+AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '65e3f384624e6b99a446fba7090c8ea9')
+# 兼容旧代码：AMAP_API_KEY 仍然指向 Web端 JS Key
+AMAP_API_KEY = AMAP_JS_KEY
 
 # DeepSeek API配置
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'

@@ -12,6 +12,10 @@ services:
         sync: false
       - key: AMAP_API_KEY
         value: 283b21e285a807bf7bda4cf43e838a26
+      - key: AMAP_JS_KEY
+        value: 283b21e285a807bf7bda4cf43e838a26
+      - key: AMAP_JS_SECURITY
+        value: 8a6ce464b341ed167f9f4d9e6ac49f42
       - key: AMAP_WEB_KEY
         value: 65e3f384624e6b99a446fba7090c8ea9
       - key: SECRET_KEY

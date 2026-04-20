@@ -6,9 +6,10 @@
   <title>⚡ 福州新能源充电桩智能选址平台 v3.0</title>
   {% load static %}
   <script type="text/javascript">
-    window._AMapSecurityConfig = { securityJsCode: '8a6ce464b341ed167f9f4d9e6ac49f42' };
+    // 高德 V1 Web端 Key 与安全密钥由 Django 模板注入，避免硬编码
+    window._AMapSecurityConfig = { securityJsCode: '{{ AMAP_JS_SECURITY|default:"8a6ce464b341ed167f9f4d9e6ac49f42" }}' };
   </script>
-  <script src="https://webapi.amap.com/maps?v=2.0&key=283b21e285a807bf7bda4cf43e838a26&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch,AMap.InfoWindow"></script>
+  <script src="https://webapi.amap.com/maps?v=2.0&key={{ AMAP_JS_KEY|default:"283b21e285a807bf7bda4cf43e838a26" }}&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch,AMap.InfoWindow"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
   <link rel="stylesheet" href="{% static 'css/main.css' %}">

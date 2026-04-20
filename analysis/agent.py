@@ -624,7 +624,7 @@ def quick_score_location(lat: float, lng: float) -> Dict[str, Any]:
     """快速计算选址评分（用于地图实时反馈）"""
     from maps.models import POIData, TrafficFlow, ExclusionZone, CandidateLocation
     
-    # 禁止区域检查
+    # 禁止区域检查（本地约束 + 高德语义判定）
     zones = ExclusionZone.objects.all()
     for zone in zones:
         dist = haversine_distance(lat, lng, zone.center_lat, zone.center_lng)
@@ -640,6 +640,32 @@ def quick_score_location(lat: float, lng: float) -> Dict[str, Any]:
                 "nearby_pois": [],
                 "nearby_roads": [],
             }
+
+    # 高德 V3 Web 服务实时识别水域/林地
+    try:
+        from fuzhou_ev_charging.amap_service import environment_check as _amap_env
+        env = _amap_env(lat, lng)
+        if env and env.get("is_restricted"):
+            return {
+                "total_score": 0,
+                "poi_score": 0,
+                "traffic_score": 0,
+                "accessibility_score": 0,
+                "competition_score": 0,
+                "exclusion_check": False,
+                "exclusion_reason": env.get("reason") or "高德识别：水域/林地",
+                "nearby_pois": [],
+                "nearby_roads": [],
+                "amap": {
+                    "address": env.get("address", ""),
+                    "district": env.get("district", ""),
+                    "is_water": env.get("is_water", False),
+                    "is_forest": env.get("is_forest", False),
+                    "source": env.get("source", "amap-v3"),
+                },
+            }
+    except Exception:
+        pass
     
     # POI评分
     pois = POIData.objects.all()
