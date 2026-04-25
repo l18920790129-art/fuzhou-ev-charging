@@ -34,13 +34,13 @@ def build_report_content(task):
           "daily_flow": r.daily_flow, "ev_ratio": r.ev_ratio}
          for r in roads if haversine(lat,lng,r.center_lat,r.center_lng) <= 1.5],
         key=lambda x: x["distance_km"])
-    high_pois = POIData.objects.filter(ev_demand_score__gte=8.0).order_by("-ev_demand_score")
+    high_pois = POIData.objects.filter(ev_demand_score__gte=7.0).order_by("-ev_demand_score")
     alternatives = [
         {"name": f"{p.name}周边停车区", "lat": round(p.latitude+0.001,6), "lng": round(p.longitude+0.001,6),
-         "score": p.ev_demand_score, "reason": f"靠近{p.name}，日均人流{p.daily_flow}人",
+         "score": p.ev_demand_score, "reason": f"靠近{p.name}（{p.get_category_display()}），日均人流{p.daily_flow}人",
          "distance_from_selected": round(haversine(lat,lng,p.latitude,p.longitude),2)}
-        for p in high_pois if 0.5 <= haversine(lat,lng,p.latitude,p.longitude) <= 5.0
-    ][:5]
+        for p in high_pois if haversine(lat,lng,p.latitude,p.longitude) >= 0.1
+    ][:8]
     return {
         "selected_location": {"lat": lat, "lng": lng,
             "address": task.address or f"福州市 ({lat:.4f}, {lng:.4f})",

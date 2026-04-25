@@ -407,26 +407,45 @@ def quick_score_location(request):
     except (ValueError, TypeError, json.JSONDecodeError):
         return JsonResponse({"error": "Invalid parameters"}, status=400)
 
-    # 1. 检查禁止区域（多边形精确检测 + 圆形兜底 + 高德语义判定）
+    # 1. 检查禁止区域（与 check_location 保持一致的合并逻辑）
     zones = ExclusionZone.objects.all()
-    conflicts = []
+    local_conflicts = []
     for zone in zones:
         if check_zone_conflict(lat, lng, zone):
             dist = haversine(lat, lng, zone.center_lat, zone.center_lng)
-            conflicts.append({"name": zone.name, "type": zone.get_zone_type_display(), "distance_km": round(dist, 3)})
+            local_conflicts.append({
+                "name": zone.name, "type": zone.get_zone_type_display(),
+                "zone_type": zone.zone_type, "distance_km": round(dist, 3),
+            })
 
     amap_info = None
     if amap_environment_check is not None:
         try:
             amap_info = amap_environment_check(lat, lng)
-            if amap_info and amap_info.get("is_restricted"):
-                conflicts.append({
-                    "name": amap_info.get("reason") or "高德识别：水域/林地",
-                    "type": "水域" if amap_info.get("is_water") else "林地",
-                    "distance_km": 0.0,
-                })
         except Exception as e:
             logger.warning("amap environment_check failed in quick_score: %s", e)
+
+    # 合并冲突：高德确认陆地时，本地水域禁区不计入冲突
+    conflicts = []
+    amap_is_land = (amap_info and not amap_info.get("is_water") and not amap_info.get("is_forest")
+                    and amap_info.get("land_aois") or amap_info and not amap_info.get("is_restricted"))
+
+    for c in local_conflicts:
+        if c["zone_type"] == "water" and amap_is_land:
+            continue
+        conflicts.append({k: v for k, v in c.items() if k != "zone_type"})
+
+    if amap_info and amap_info.get("is_restricted"):
+        if amap_info.get("is_water"):
+            conflicts.append({
+                "name": amap_info.get("reason") or "高德识别：水域/河道",
+                "type": "水域", "distance_km": 0.0,
+            })
+        elif amap_info.get("is_forest"):
+            conflicts.append({
+                "name": amap_info.get("reason") or "高德识别：林地/保护区",
+                "type": "林地", "distance_km": 0.0,
+            })
 
     if conflicts:
         payload = {
@@ -434,6 +453,10 @@ def quick_score_location(request):
             "conflicts": conflicts,
             "message": f"该位置位于禁止区域内：{conflicts[0]['name']}",
             "total_score": 0,
+            "poi_score": 0,
+            "traffic_score": 0,
+            "accessibility_score": 0,
+            "competition_score": 0,
         }
         if amap_info:
             payload["amap"] = {
@@ -528,6 +551,12 @@ def quick_score_location(request):
         "total_score": total_score,
         "rating": rating,
         "rating_level": rating_level,
+        # 前端直接读取的顶层字段
+        "poi_score": round(poi_score, 2),
+        "traffic_score": round(traffic_score, 2),
+        "accessibility_score": round(accessibility_score, 2),
+        "competition_score": round(competition_score, 2),
+        # 兼容旧的 score_breakdown 结构
         "score_breakdown": {
             "poi_density": round(poi_score, 2),
             "traffic_flow": round(traffic_score, 2),

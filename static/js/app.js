@@ -600,12 +600,13 @@ function updateQuickScore(data) {
   const gradeEl = document.getElementById('scoreGrade');
   if (gradeEl) { gradeEl.textContent = grade; gradeEl.style.color = color; }
 
-  // 评分条
+  // 评分条（兼容两种后端返回格式）
+  const sb = data.score_breakdown || {};
   const dims = [
-    { label: 'POI密度', val: data.poi_score || 0, color: '#3b82f6' },
-    { label: '交通流量', val: data.traffic_score || 0, color: '#f59e0b' },
-    { label: '可达性', val: data.accessibility_score || 0, color: '#10b981' },
-    { label: '竞争分析', val: data.competition_score || 0, color: '#8b5cf6' },
+    { label: 'POI密度', val: data.poi_score || sb.poi_density || 0, color: '#3b82f6' },
+    { label: '交通流量', val: data.traffic_score || sb.traffic_flow || 0, color: '#f59e0b' },
+    { label: '可达性', val: data.accessibility_score || sb.accessibility || 0, color: '#10b981' },
+    { label: '竞争分析', val: data.competition_score || sb.competition || 0, color: '#8b5cf6' },
   ];
   const details = document.getElementById('scoreDetails');
   if (details) {
