@@ -5,6 +5,13 @@ import json
 import logging
 import math
 from django.http import JsonResponse
+
+
+def _no_store(resp):
+    """给 JSON 响应加上“不要缓存”头，避免代理/浏览器持久化。"""
+    resp["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp["Pragma"] = "no-cache"
+    return resp
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from .models import POIData, TrafficFlow, ExclusionZone, GeoEntity, CandidateLocation
@@ -82,7 +89,7 @@ def geo_entities(request):
     if entity_type:
         qs = qs.filter(entity_type=entity_type)
     data = [{"id": e.id, "name": e.name, "type": e.entity_type, "lat": e.latitude, "lng": e.longitude, "district": e.district} for e in qs[:200]]
-    return JsonResponse({"data": data, "total": len(data)})
+    return _no_store(JsonResponse({"data": data, "total": len(data)}))
 
 
 def poi_list(request):
@@ -142,7 +149,7 @@ def poi_list(request):
         enriched.sort(key=lambda x: x["distance_km"])
         pois = enriched
 
-    return JsonResponse({"data": pois, "total": len(pois), "source": "amap-v3"})
+    return _no_store(JsonResponse({"data": pois, "total": len(pois), "source": "amap-v3"}))
 
 
 def traffic_flow(request):
@@ -180,7 +187,7 @@ def traffic_flow(request):
             item["path"] = [[t.start_lat, t.start_lng], [t.center_lat, t.center_lng], [t.end_lat, t.end_lng]]
         data.append(item)
 
-    return JsonResponse({"data": data, "total": len(data)})
+    return _no_store(JsonResponse({"data": data, "total": len(data)}))
 
 
 def exclusion_zones(request):
@@ -221,10 +228,9 @@ def exclusion_zones(request):
             item["boundary"] = None
         data.append(item)
 
-    return JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"})
+    return _no_store(JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"}))
 
 
-@csrf_exempt
 def check_location(request):
     """检查位置是否在禁止选址区域内
 
@@ -353,7 +359,7 @@ def heatmap_data(request):
                     "road_name": road.road_name,
                 })
 
-    return JsonResponse({"data": heatmap_points, "total": len(heatmap_points)})
+    return _no_store(JsonResponse({"data": heatmap_points, "total": len(heatmap_points)}))
 
 
 def candidates_list(request):

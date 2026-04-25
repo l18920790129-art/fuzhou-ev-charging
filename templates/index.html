@@ -12,7 +12,7 @@
   <script src="https://webapi.amap.com/maps?v=2.0&key={{ AMAP_JS_KEY|default:"283b21e285a807bf7bda4cf43e838a26" }}&plugin=AMap.HeatMap,AMap.Scale,AMap.ToolBar,AMap.Geocoder,AMap.PlaceSearch,AMap.InfoWindow"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-  <link rel="stylesheet" href="{% static 'css/main.css' %}">
+  <link rel="stylesheet" href="{% static 'css/main.css' %}?v=20260425a">
 </head>
 <body>
   <header class="header">
@@ -359,6 +359,6 @@
   </div>
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="{% static 'js/app.js' %}?v=20260319"></script>
+  <script src="{% static 'js/app.js' %}?v=20260425a"></script>
 </body>
 </html>
