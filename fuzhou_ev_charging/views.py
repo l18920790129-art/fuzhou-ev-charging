@@ -1,10 +1,16 @@
 """
 主视图 - 提供前端页面入口 + 高德 REST 代理端点
 """
+import os
+import time
 from django.conf import settings
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+
+# 部署时生成一个 build_id（进程启动时计算一次），
+# 所有 HTML 带上这个参数，指向 app.js / main.css，以强制打破浏览器/CDN 缓存。
+BUILD_ID = os.environ.get("RENDER_GIT_COMMIT", "")[:8] or time.strftime("%Y%m%d%H%M", time.localtime())
 
 from .amap_service import (
     environment_check,
@@ -15,11 +21,15 @@ from .amap_service import (
 
 
 def index(request):
-    """返回前端主页面（向模板注入高德 JS Key/安全码，避免硬编码）"""
-    return render(request, 'index.html', {
+    """返回前端主页面（向模板注入高德 JS Key/安全码 + build_id）"""
+    resp = render(request, 'index.html', {
         'AMAP_JS_KEY': settings.AMAP_JS_KEY,
         'AMAP_JS_SECURITY': settings.AMAP_JS_SECURITY,
+        'BUILD_ID': BUILD_ID,
     })
+    resp["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp["Pragma"] = "no-cache"
+    return resp
 
 
 @csrf_exempt

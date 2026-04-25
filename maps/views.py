@@ -105,19 +105,14 @@ def poi_list(request):
     lat = request.GET.get('lat')
     lng = request.GET.get('lng')
     radius = float(request.GET.get('radius', 2.0))
+    # source=local 时强制走数据库 POIData（精选 59 条带评分的种子数据），
+    # 用于数据屏 / 排行榜 / 分布图等需要稳定评分梯度的场景；
+    # 否则默认走数据库优先（保证 ev_demand_score 有效），仅在数据库为空时降级到高德 raw。
+    source = request.GET.get('source', 'local')
 
-    pois: list = []
-    if amap_fetch_city_pois is not None:
-        try:
-            pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
-        except Exception as e:
-            logger.warning("amap_fetch_city_pois failed: %s", e)
-            pois = []
-
-    # 若高德拉取完全失败（如网络故障），兜底回本地 POIData 表，保证页面不崩
-    if not pois:
+    def _from_local():
         qs = POIData.objects.all()
-        pois = [{
+        return [{
             "id": p.id, "name": p.name, "category": p.category,
             "category_display": p.get_category_display(),
             "lat": p.latitude, "lng": p.longitude, "district": p.district,
@@ -125,6 +120,32 @@ def poi_list(request):
             "influence_weight": p.influence_weight,
             "type": "", "typecode": "", "address": "", "adname": p.district,
         } for p in qs]
+
+    pois: list = []
+    used_source = "local"
+    if source == "local":
+        pois = _from_local()
+    else:
+        if amap_fetch_city_pois is not None:
+            try:
+                pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
+                used_source = "amap-v3"
+            except Exception as e:
+                logger.warning("amap_fetch_city_pois failed: %s", e)
+                pois = []
+        if not pois:
+            pois = _from_local()
+            used_source = "local"
+
+        # 关键：哪怕走的是高德 raw 数据，也确保 ev_demand_score 是数字（防止前端显示 0）
+        for p in pois:
+            try:
+                if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
+                    # 简单兜底：按 daily_flow 给 5-9 分
+                    df = float(p.get("daily_flow") or 5000)
+                    p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
+            except Exception:
+                p["ev_demand_score"] = 6.0
 
     # 过滤：category
     if category:
@@ -149,7 +170,7 @@ def poi_list(request):
         enriched.sort(key=lambda x: x["distance_km"])
         pois = enriched
 
-    return _no_store(JsonResponse({"data": pois, "total": len(pois), "source": "amap-v3"}))
+    return _no_store(JsonResponse({"data": pois, "total": len(pois), "source": used_source}))
 
 
 def traffic_flow(request):
@@ -191,11 +212,16 @@ def traffic_flow(request):
 
 
 def exclusion_zones(request):
-    """获取禁止选址区域（2026-04：数据源改为高德 V3 水域/林地/机场 POI + 原有本地圆形兜底）"""
+    """获取禁止选址区域。
+
+    默认 source=local 只返回本地人工维护的禁区（~8 个，用于数据屏统计与列表）；
+    source=full 才拼接高德 V3 水域/森林/机场 POI（~100+，用于地图画圈）。
+    """
+    source = request.GET.get('source', 'local')
     data: list = []
 
     # 1) 高德真实数据：河流/湖泊/水库/森林公园/机场
-    if amap_fetch_city_exclusions is not None:
+    if source == 'full' and amap_fetch_city_exclusions is not None:
         try:
             for z in amap_fetch_city_exclusions(city="福州") or []:
                 data.append({
@@ -228,7 +254,7 @@ def exclusion_zones(request):
             item["boundary"] = None
         data.append(item)
 
-    return _no_store(JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"}))
+    return _no_store(JsonResponse({"data": data, "total": len(data), "source": source}))
 
 
 def check_location(request):
@@ -363,16 +389,17 @@ def heatmap_data(request):
 
 
 def candidates_list(request):
-    """获取候选位置/现有充电站列表
+    """获取候选位置/现有充电站列表。
 
-    2026-04：现有充电站数据源改为高德 V3 POI（typecode=011100），整市覆盖。
-    candidates（status='candidate'）仍从本地表取，两者合并返回。
+    默认 source=local 只返回本地 CandidateLocation（13 条 status 为 existing/candidate）；
+    source=full 才拼接高德 V3 现有充电站数据，用于地图展示所有站点。
     """
     from .models import CandidateLocation
+    source = request.GET.get('source', 'local')
     data: list = []
 
     # 1) 高德真实充电站
-    if amap_fetch_city_stations is not None:
+    if source == 'full' and amap_fetch_city_stations is not None:
         try:
             for s in amap_fetch_city_stations(city="福州", max_pages=4) or []:
                 data.append({
@@ -405,7 +432,7 @@ def candidates_list(request):
             "source": "local",
         })
 
-    return JsonResponse({"data": data, "total": len(data), "source": "amap-v3+local"})
+    return _no_store(JsonResponse({"data": data, "total": len(data), "source": source}))
 
 
 @csrf_exempt

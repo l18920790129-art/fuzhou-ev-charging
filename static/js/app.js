@@ -669,7 +669,7 @@ function updateNearbyPOIs(pois) {
 // ============================================================
 async function loadPOIMarkers() {
   try {
-    const res = await fetch(`${API.maps}/pois/`);
+    const res = await fetch(`${API.maps}/pois/?source=full`);
     const data = await res.json();
     const pois = data.data || data.results || [];
     if (!pois.length) { showToast('暂无POI数据', 'warning'); return; }
@@ -696,7 +696,7 @@ function clearPOIMarkers() {
 
 async function loadExclusionZones() {
   try {
-    const res = await fetch(`${API.maps}/exclusion-zones/`);
+    const res = await fetch(`${API.maps}/exclusion-zones/?source=full`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const zones = data.data || data.results || [];
@@ -729,7 +729,7 @@ function clearExclusionZones() {
 async function loadExistingStations() {
   try {
     clearExistingStations(); // 先清除旧的
-    const res = await fetch(`${API.maps}/candidates/`);
+    const res = await fetch(`${API.maps}/candidates/?source=full`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const stations = data.data || data.results || [];
