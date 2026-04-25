@@ -26,6 +26,17 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _amap_confirms_land(amap_info):
+    """重写高德“陆地确认”判定，避免原“... or amap_info and not is_restricted”优先级误报。"""
+    if not amap_info:
+        return False
+    if amap_info.get("is_restricted"):
+        return False
+    if amap_info.get("is_water") or amap_info.get("is_forest"):
+        return False
+    return bool(amap_info.get("land_aois") or amap_info.get("land_pois") or amap_info.get("address"))
+
+
 def haversine(lat1, lng1, lat2, lng2):
     R = 6371
     dlat = math.radians(lat2 - lat1)
@@ -255,8 +266,7 @@ def check_location(request):
     #    - 对于非水域禁区（林地/保护区/军事区等）：直接计入冲突
     #    - 高德判定为水域/林地：将高德冲突加入
     conflicts = []
-    amap_is_land = (amap_info and not amap_info.get("is_water") and not amap_info.get("is_forest")
-                    and amap_info.get("land_aois") or amap_info and not amap_info.get("is_restricted"))
+    amap_is_land = _amap_confirms_land(amap_info)
 
     for c in local_conflicts:
         # 水域禁区：高德确认为陆地则跳过（高德权威更高）
@@ -427,8 +437,7 @@ def quick_score_location(request):
 
     # 合并冲突：高德确认陆地时，本地水域禁区不计入冲突
     conflicts = []
-    amap_is_land = (amap_info and not amap_info.get("is_water") and not amap_info.get("is_forest")
-                    and amap_info.get("land_aois") or amap_info and not amap_info.get("is_restricted"))
+    amap_is_land = _amap_confirms_land(amap_info)
 
     for c in local_conflicts:
         if c["zone_type"] == "water" and amap_is_land:

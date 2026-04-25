@@ -249,12 +249,13 @@ def environment_check(lat: float, lng: float) -> Dict[str, Any]:
             is_water = True
             water_reason.append(f"周边水域/渡口类 POI：{water_evidence[0]['name']}")
 
-        # 2) regeo 地址仅到街道/镇级别且 aois/pois 均为空（国内江河湖海的典型特征）
-        if not is_water and street_level_only and not aois_raw and not pois_raw:
-            # 额外用 "闽江/乌龙江/光明港/大樟溪" 主动文本搜索验证一下：
-            # 它们是否的确是附近主河道（原则上这一条容错性更强）
-            is_water = True
-            water_reason.append(f"无陆地 AOI/POI 且地址退化至“{addr}”（判定为水面/无人区）")
+        # 2) regeo 地址仅到街道/镇级别且 aois/pois 均为空。
+        # 严格起见：只有同时出现“周边 250m 水域证据”或“地址本身含水域关键字”才能被认为是水；
+        # 否则只是“陆地盲区”（如郊外/工业地块/在建地区）不该误报。
+        # 这一条原本会把“仓山区金山街道”这种陆地盲区误报为水，现以 #1 / #3 为准。
+        # if not is_water and street_level_only and not aois_raw and not pois_raw:
+        #     is_water = True
+        #     water_reason.append(f"无陆地 AOI/POI 且地址退化至“{addr}”（判定为水面/无人区）")
 
         # 3) regeo 地址已包含水域关键字且没有陆地细粒度信息
         if not is_water and addr and _contains_any(addr, _WATER_KEYWORDS) and street_level_only:

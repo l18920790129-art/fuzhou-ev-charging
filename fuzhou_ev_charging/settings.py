@@ -122,6 +122,11 @@ REST_FRAMEWORK = {
 
 # API Key配置（从环境变量读取）
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-465f3be43b3e4a79bc0960503121cb6d')
+# Agent 使用的主模型：DeepSeek-V3.2（官方别名 deepseek-chat，是 DeepSeek 目前支持 function calling 的最强模型）。
+# DeepSeek-R1（deepseek-reasoner）推理强但官方明确不支持 tool calling，仅预留供未来纯推理场景。
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+DEEPSEEK_REASONER_MODEL = os.environ.get('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner')
+DEEPSEEK_BASE_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
 # 高德地图 Key 体系（2026-04 更新，统一使用客户B两把 Key）
 #   - V1 Web端 JS API Key + 安全密钥，用于前端加载 AMap JS SDK
 #   - V3 Web服务 Key，用于后端调用 REST API（regeo / place-around / geocode）
@@ -131,9 +136,7 @@ AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '65e3f384624e6b99a446fba7090c8ea9'
 # 兼容旧代码：AMAP_API_KEY 仍然指向 Web端 JS Key
 AMAP_API_KEY = AMAP_JS_KEY
 
-# DeepSeek API配置
-DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
-DEEPSEEK_MODEL = 'deepseek-chat'
+# DeepSeek API配置（DEEPSEEK_BASE_URL/DEEPSEEK_MODEL 已在上方支持环境变量覆盖，默认 deepseek-reasoner）
 
 # ChromaDB配置
 CHROMA_PERSIST_DIR = os.environ.get('CHROMA_PERSIST_DIR', str(BASE_DIR / 'knowledge_base' / 'chroma_db'))

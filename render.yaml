@@ -9,7 +9,13 @@ services:
       - key: DJANGO_SETTINGS_MODULE
         value: fuzhou_ev_charging.settings
       - key: DEEPSEEK_API_KEY
-        sync: false
+        value: sk-465f3be43b3e4a79bc0960503121cb6d
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: DEEPSEEK_REASONER_MODEL
+        value: deepseek-reasoner
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com/v1
       - key: AMAP_API_KEY
         value: 283b21e285a807bf7bda4cf43e838a26
       - key: AMAP_JS_KEY

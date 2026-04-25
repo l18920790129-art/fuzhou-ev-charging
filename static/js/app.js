@@ -420,7 +420,19 @@ function toggleMapBtn(btnId) {
   return btn.classList.toggle('active');
 }
 
-function quickSelectLocation(lat, lng, name) {
+// 等待地图实例就绪（用户可能从其他 tab 发起选点，此时 STATE.mapInstance 仍为空）
+function _waitForMap(timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (STATE.mapInstance) return resolve(true);
+    const start = Date.now();
+    const t = setInterval(() => {
+      if (STATE.mapInstance) { clearInterval(t); resolve(true); }
+      else if (Date.now() - start > timeoutMs) { clearInterval(t); resolve(false); }
+    }, 80);
+  });
+}
+
+async function quickSelectLocation(lat, lng, name) {
   STATE.selectedLat = lat;
   STATE.selectedLng = lng;
   STATE.selectedAddress = name;
@@ -428,11 +440,24 @@ function quickSelectLocation(lat, lng, name) {
   const lngInput = document.getElementById('manualLng');
   if (latInput) latInput.value = lat;
   if (lngInput) lngInput.value = lng;
-  if (STATE.mapInstance) {
-    STATE.mapInstance.setCenter([lng, lat]);
-    STATE.mapInstance.setZoom(14);
-    addMapMarker(lat, lng);
+
+  // 1) 如果当前不在地图 tab，先切过去（避免地图未初始化导致 marker 加不上）
+  const mapPanelActive = document.getElementById('tab-map')?.classList.contains('active');
+  if (!mapPanelActive) {
+    try { switchTab('map'); } catch (e) {}
   }
+  // 2) 等地图就绪后再置中、加标记
+  const ready = await _waitForMap(4000);
+  if (ready) {
+    try {
+      STATE.mapInstance.setCenter([lng, lat]);
+      STATE.mapInstance.setZoom(15);
+      addMapMarker(lat, lng);
+    } catch (e) { console.warn('setCenter/addMapMarker:', e); }
+  } else {
+    console.warn('地图实例未在超时内就绪，跳过标记');
+  }
+  // 3) 同步更新卡片 + 发起评分
   updateLocationCard(lat, lng, name);
   checkAndScore(lat, lng);
   showToast(`已选择：${name}`, 'success');
@@ -445,6 +470,7 @@ function manualSelectLocation() {
   if (lat < 25.5 || lat > 26.5 || lng < 118.8 || lng > 120.0) {
     showToast('坐标超出福州市区范围', 'warning'); return;
   }
+  // 手动输入坚定走“切 tab + 等地图”的完整流程
   quickSelectLocation(lat, lng, `自定义坐标 (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
 }
 
@@ -472,32 +498,33 @@ function addMapMarker(lat, lng) {
 }
 
 async function checkAndScore(lat, lng) {
+  let blocked = false;
   try {
     const res = await fetch(`${API.maps}/check/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
     updateExclusionStatus(data);
     if (!data.is_valid) {
-      showToast(`🚫 该位置位于禁止区域（${data.conflicts[0]?.name}），无法选点`, 'error');
-      STATE.markers.forEach(m => { try { m.setMap(null); } catch(e) {} });
-      STATE.markers = [];
-      STATE.selectedLat = null;
-      STATE.selectedLng = null;
-      document.getElementById('locationInfo').innerHTML = '<p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动检测禁止区域并评分</p>';
-      document.getElementById('locationStatus').textContent = '未选择';
-      document.getElementById('locationStatus').className = 'status-badge';
-      document.getElementById('selectedLocationBar').style.display = 'none';
-      return;
+      blocked = true;
+      const name = data.conflicts && data.conflicts[0] && data.conflicts[0].name ? data.conflicts[0].name : '未知禁区';
+      showToast(`⚠️ 该位置被识别为禁区（${name}），评分以 0 处理。如果你确认是陆地，可别选附近另一点重试。`, 'warning');
+      // 不再清空 selectedLat/Lng、不再删 marker：
+      // 让用户能看到“评分卡 + 禁区提示”，并能点击“重选”按钮。
     }
-  } catch (e) {}
+  } catch (e) { console.warn('check/ failed', e); }
   try {
     const res = await fetch(`${API.analysis}/quick-score/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
     updateQuickScore(data);
     updateNearbyPOIs(data.nearby_pois || []);
-  } catch (e) {}
+  } catch (e) { console.warn('quick-score failed', e); }
   document.getElementById('quickScoreCard').style.display = 'block';
   document.getElementById('poiCard').style.display = 'block';
   document.getElementById('actionButtons').style.display = 'flex';
+  // 即使被判为禁区，底部“选择列”也保留，用户能选择「重新选点」或「AI 推荐」
+  if (blocked) {
+    const bar = document.getElementById('selectedLocationBar');
+    if (bar) bar.style.display = 'flex';
+  }
 }
 
 async function onMapClick(e) {
@@ -517,19 +544,13 @@ async function onMapClick(e) {
   try {
     const res = await fetch(`${API.maps}/check/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
-    if (!data.is_valid) {
-      showToast(`🚫 该位置位于禁止区域（${data.conflicts[0]?.name}），无法选点`, 'error');
-      STATE.markers.forEach(m => { try { m.setMap(null); } catch(e) {} });
-      STATE.markers = [];
-      STATE.selectedLat = null;
-      STATE.selectedLng = null;
-      document.getElementById('locationInfo').innerHTML = '<p class="hint-text">点击地图选择充电桩候选位置<br>系统将自动检测禁止区域并评分</p>';
-      document.getElementById('locationStatus').textContent = '未选择';
-      document.getElementById('locationStatus').className = 'status-badge';
-      return;
-    }
     updateExclusionStatus(data);
-  } catch (e) {}
+    if (!data.is_valid) {
+      const name = data.conflicts && data.conflicts[0] && data.conflicts[0].name ? data.conflicts[0].name : '未知禁区';
+      showToast(`⚠️ 该位置被识别为禁区（${name}）。评分以 0 处理。`, 'warning');
+      // 同样不清空 selectedLat/Lng、不删 marker：让用户能选“重选”/“AI 推荐”
+    }
+  } catch (e) { console.warn('check/ failed', e); }
   try {
     const res = await fetch(`${API.analysis}/quick-score/?lat=${lat}&lng=${lng}`);
     const data = await res.json();
