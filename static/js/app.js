@@ -177,7 +177,7 @@ async function loadDashboard() {
     // 逐个请求，防止 Promise.all 因一个超时而全部失败
     let pois = [], roads = [], stations = [], zones = [];
     try {
-      const r = await fetchWithTimeout(`${API.maps}/pois/`, 30000);
+      const r = await fetchWithTimeout(`${API.maps}/pois/?source=full`, 30000);
       const d = await r.json(); pois = d.data || [];
     } catch(e) { console.warn('POI fetch failed:', e); }
     try {
@@ -185,11 +185,11 @@ async function loadDashboard() {
       const d = await r.json(); roads = d.data || [];
     } catch(e) { console.warn('Traffic fetch failed:', e); }
     try {
-      const r = await fetchWithTimeout(`${API.maps}/candidates/`, 30000);
+      const r = await fetchWithTimeout(`${API.maps}/candidates/?source=full`, 30000);
       const d = await r.json(); stations = d.data || [];
     } catch(e) { console.warn('Candidates fetch failed:', e); }
     try {
-      const r = await fetchWithTimeout(`${API.maps}/exclusion-zones/`, 30000);
+      const r = await fetchWithTimeout(`${API.maps}/exclusion-zones/?source=full`, 30000);
       const d = await r.json(); zones = d.data || [];
     } catch(e) { console.warn('Exclusion zones fetch failed:', e); }
 

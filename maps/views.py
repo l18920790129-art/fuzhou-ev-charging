@@ -4,6 +4,7 @@
 import json
 import logging
 import math
+import os
 from django.http import JsonResponse
 
 
@@ -31,6 +32,25 @@ except Exception:  # pragma: no cover
     amap_fetch_city_exclusions = None
 
 logger = logging.getLogger(__name__)
+
+# ---- 预缓存 JSON 文件路径（当高德 API 不可用时作为 fallback） ----
+_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'amap_cache')
+_POIS_CACHE = os.path.join(_CACHE_DIR, 'city_pois.json')
+_STATIONS_CACHE = os.path.join(_CACHE_DIR, 'city_stations.json')
+_EXCLUSIONS_CACHE = os.path.join(_CACHE_DIR, 'city_exclusions.json')
+
+def _load_cache(filepath):
+    """从预缓存 JSON 文件加载数据，失败返回空列表。"""
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list) and len(data) > 0:
+                logger.info('Loaded %d records from cache: %s', len(data), filepath)
+                return data
+    except Exception as e:
+        logger.warning('Failed to load cache %s: %s', filepath, e)
+    return []
 
 
 def _amap_confirms_land(amap_info):
@@ -126,13 +146,19 @@ def poi_list(request):
     if source == "local":
         pois = _from_local()
     else:
+        # 优先级：高德API -> 缓存JSON -> 本地数据库
         if amap_fetch_city_pois is not None:
             try:
                 pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
-                used_source = "amap-v3"
+                if pois:
+                    used_source = "amap-v3"
             except Exception as e:
                 logger.warning("amap_fetch_city_pois failed: %s", e)
                 pois = []
+        if not pois:
+            pois = _load_cache(_POIS_CACHE)
+            if pois:
+                used_source = "cache"
         if not pois:
             pois = _from_local()
             used_source = "local"
@@ -221,38 +247,50 @@ def exclusion_zones(request):
     data: list = []
 
     # 1) 高德真实数据：河流/湖泊/水库/森林公园/机场
-    if source == 'full' and amap_fetch_city_exclusions is not None:
-        try:
-            for z in amap_fetch_city_exclusions(city="福州") or []:
-                data.append({
-                    "id": f"amap_{z['id']}",
-                    "name": z["name"],
-                    "zone_type": z["zone_type"],
-                    "zone_type_display": z["zone_type_display"],
-                    "center_lat": z["center_lat"],
-                    "center_lng": z["center_lng"],
-                    "radius_km": z["radius_km"],
-                    "description": z.get("description", ""),
-                    "boundary": z.get("boundary"),
-                    "source": "amap-v3",
-                })
-        except Exception as e:
-            logger.warning("amap_fetch_city_exclusions failed: %s", e)
+    amap_ok = False
+    if source == 'full':
+        if amap_fetch_city_exclusions is not None:
+            try:
+                raw = amap_fetch_city_exclusions(city="福州") or []
+                if raw:
+                    for z in raw:
+                        data.append({
+                            "id": f"amap_{z['id']}",
+                            "name": z["name"],
+                            "zone_type": z["zone_type"],
+                            "zone_type_display": z["zone_type_display"],
+                            "center_lat": z["center_lat"],
+                            "center_lng": z["center_lng"],
+                            "radius_km": z["radius_km"],
+                            "description": z.get("description", ""),
+                            "boundary": z.get("boundary"),
+                            "source": "amap-v3",
+                        })
+                    amap_ok = True
+            except Exception as e:
+                logger.warning("amap_fetch_city_exclusions failed: %s", e)
+        # 高德失败时从缓存文件读取
+        if not amap_ok:
+            cached = _load_cache(_EXCLUSIONS_CACHE)
+            if cached:
+                data.extend(cached)
 
-    # 2) 本地补充：保留原 ExclusionZone 作为人工兜底（例如军事/医疗重地）
-    for z in ExclusionZone.objects.all():
-        item = {
-            "id": f"local_{z.id}", "name": z.name,
-            "zone_type": z.zone_type, "zone_type_display": z.get_zone_type_display(),
-            "center_lat": z.center_lat, "center_lng": z.center_lng,
-            "radius_km": z.radius_km, "description": z.description,
-            "source": "local",
-        }
-        try:
-            item["boundary"] = json.loads(z.boundary_json)
-        except Exception:
-            item["boundary"] = None
-        data.append(item)
+    # 2) 本地补充：仅当未从高德/缓存获取到数据时才叠加本地数据
+    #    （缓存文件已包含全量数据，不需要叠加）
+    if source == 'local' or not data:
+        for z in ExclusionZone.objects.all():
+            item = {
+                "id": f"local_{z.id}", "name": z.name,
+                "zone_type": z.zone_type, "zone_type_display": z.get_zone_type_display(),
+                "center_lat": z.center_lat, "center_lng": z.center_lng,
+                "radius_km": z.radius_km, "description": z.description,
+                "source": "local",
+            }
+            try:
+                item["boundary"] = json.loads(z.boundary_json)
+            except Exception:
+                item["boundary"] = None
+            data.append(item)
 
     return _no_store(JsonResponse({"data": data, "total": len(data), "source": source}))
 
@@ -399,38 +437,50 @@ def candidates_list(request):
     data: list = []
 
     # 1) 高德真实充电站
-    if source == 'full' and amap_fetch_city_stations is not None:
-        try:
-            for s in amap_fetch_city_stations(city="福州", max_pages=4) or []:
-                data.append({
-                    "id": f"amap_{s['id']}",
-                    "name": s["name"],
-                    "lat": s["lat"],
-                    "lng": s["lng"],
-                    "status": "existing",
-                    "total_score": 0,
-                    "address": s.get("address", ""),
-                    "operator": s.get("operator", ""),
-                    "district": s.get("adname", ""),
-                    "type": s.get("type", ""),
-                    "typecode": s.get("typecode", ""),
-                    "source": "amap-v3",
-                })
-        except Exception as e:
-            logger.warning("amap_fetch_city_stations failed: %s", e)
+    amap_ok = False
+    if source == 'full':
+        if amap_fetch_city_stations is not None:
+            try:
+                raw = amap_fetch_city_stations(city="福州", max_pages=4) or []
+                if raw:
+                    for s in raw:
+                        data.append({
+                            "id": f"amap_{s['id']}",
+                            "name": s["name"],
+                            "lat": s["lat"],
+                            "lng": s["lng"],
+                            "status": "existing",
+                            "total_score": 0,
+                            "address": s.get("address", ""),
+                            "operator": s.get("operator", ""),
+                            "district": s.get("adname", ""),
+                            "type": s.get("type", ""),
+                            "typecode": s.get("typecode", ""),
+                            "source": "amap-v3",
+                        })
+                    amap_ok = True
+            except Exception as e:
+                logger.warning("amap_fetch_city_stations failed: %s", e)
+        # 高德失败时从缓存文件读取
+        if not amap_ok:
+            cached = _load_cache(_STATIONS_CACHE)
+            if cached:
+                data.extend(cached)
 
     # 2) 本地 CandidateLocation（候选/规划中）
-    for c in CandidateLocation.objects.all():
-        data.append({
-            "id": f"local_{c.id}",
-            "name": c.name,
-            "lat": c.latitude,
-            "lng": c.longitude,
-            "status": c.status,
-            "total_score": c.total_score,
-            "address": c.address,
-            "source": "local",
-        })
+    #    仅当未从高德/缓存获取到数据时才叠加本地数据
+    if source == 'local' or not data:
+        for c in CandidateLocation.objects.all():
+            data.append({
+                "id": f"local_{c.id}",
+                "name": c.name,
+                "lat": c.latitude,
+                "lng": c.longitude,
+                "status": c.status,
+                "total_score": c.total_score,
+                "address": c.address,
+                "source": "local",
+            })
 
     return _no_store(JsonResponse({"data": data, "total": len(data), "source": source}))
 
