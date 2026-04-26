@@ -493,12 +493,13 @@ def quick_score_location(request):
         payload = {
             "is_valid": False,
             "conflicts": conflicts,
-            "message": f"该位置位于禁止区域内：{conflicts[0]['name']}",
-            "total_score": 0,
-            "poi_score": 0,
-            "traffic_score": 0,
-            "accessibility_score": 0,
-            "competition_score": 0,
+            "message": f"该位置位于禁止区域内：{conflicts[0]['name']}，不予打分，请重选陆地点",
+            # 位于禁区不予打分；null 让前端显示 "—"
+            "total_score": None,
+            "poi_score": None,
+            "traffic_score": None,
+            "accessibility_score": None,
+            "competition_score": None,
         }
         if amap_info:
             payload["amap"] = {
@@ -563,7 +564,8 @@ def quick_score_location(request):
         dist = haversine(lat, lng, s.latitude, s.longitude)
         if dist <= 1.5:
             competition_count += 1
-    competition_score = max(0.0, 10.0 - competition_count * 2.5)
+    # 竞争底分 2.0，避免 0 分误导
+    competition_score = max(2.0, 10.0 - competition_count * 2.5)
 
     # 综合评分（加权平均）
     total_score = round(

@@ -464,14 +464,39 @@ async function quickSelectLocation(lat, lng, name) {
 }
 
 function manualSelectLocation() {
-  const lat = parseFloat(document.getElementById('manualLat').value);
-  const lng = parseFloat(document.getElementById('manualLng').value);
-  if (isNaN(lat) || isNaN(lng)) { showToast('请输入有效坐标', 'warning'); return; }
-  if (lat < 25.5 || lat > 26.5 || lng < 118.8 || lng > 120.0) {
-    showToast('坐标超出福州市区范围', 'warning'); return;
+  // 主动 blur 输入框，避免中文 IME 未提交导致读不到最后一个字符
+  const latEl = document.getElementById('manualLat');
+  const lngEl = document.getElementById('manualLng');
+  if (latEl) latEl.blur();
+  if (lngEl) lngEl.blur();
+  // 用 Number() 容错解析（也接受 "26,0756" 中文逗号）
+  const rawLat = (latEl?.value || '').toString().trim().replace(/，/g, ',').replace(',', '.');
+  const rawLng = (lngEl?.value || '').toString().trim().replace(/，/g, ',').replace(',', '.');
+  const lat = Number(rawLat);
+  const lng = Number(rawLng);
+  if (!isFinite(lat) || !isFinite(lng) || isNaN(lat) || isNaN(lng)) {
+    showToast('请输入有效坐标（例如：26.0756, 119.3034）', 'warning');
+    return;
   }
-  // 手动输入坚定走“切 tab + 等地图”的完整流程
+  // 扩大福州全域范围：25.0–26.8 × 118.5–120.5（包含长乐、连江、闽侯、永泰、闽清、罗源）
+  if (lat < 25.0 || lat > 26.8 || lng < 118.5 || lng > 120.5) {
+    showToast(`坐标超出福州市范围（当前：${lat}, ${lng}）`, 'warning');
+    return;
+  }
+  // 清除残留选点 marker，并主动切到地图 tab
+  try { (STATE.markers || []).forEach(m => { try { m.setMap(null); } catch(_){} }); STATE.markers = []; } catch (_) {}
+  // 立即展示 actionButtons 与选点信息栏，不依赖后续异步评分
+  try {
+    const ab = document.getElementById('actionButtons');
+    if (ab) ab.style.display = 'flex';
+  } catch (_) {}
+  showToast(`选点中：(${lat.toFixed(4)}, ${lng.toFixed(4)})`, 'info');
   quickSelectLocation(lat, lng, `自定义坐标 (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+  // 兜底：无论异步结果如何，强制显示选点信息栏与操作按钮
+  try {
+    document.getElementById('selectedLocationBar').style.display = 'flex';
+    document.getElementById('actionButtons').style.display = 'flex';
+  } catch (_) {}
 }
 
 function clearSelectedLocation() {
@@ -599,22 +624,32 @@ function updateExclusionStatus(data) {
     el.textContent = `⚠️ 位于禁止区域：${names}`;
   }
 }
-
 function updateQuickScore(data) {
-  const score = data.total_score || 0;
-  document.getElementById('scoreValue').textContent = score.toFixed(1);
+  // 兜底：无论数据如何，强制显示评分卡片
+  try { document.getElementById('quickScoreCard').style.display = 'block'; } catch (_) {}
+  // 禁区识别：后端会返 total_score=null 且 is_valid=false，前端以 “—” 显示，绝不变 “0.0”"
+  const isExcluded = (data && data.is_valid === false);
+  const score = (data && typeof data.total_score === 'number') ? data.total_score : null;
+  const scoreText = (score === null || score === undefined) ? '—' : score.toFixed(1);
+  document.getElementById('scoreValue').textContent = scoreText;
 
   // 更新评分环
   const ring = document.getElementById('scoreRingPath');
   if (ring) {
     const circumference = 213.6;
-    const offset = circumference - (score / 10) * circumference;
+    const ratio = (score === null || score === undefined) ? 0 : (score / 10);
+    const offset = circumference - ratio * circumference;
     ring.style.strokeDashoffset = offset;
+    ring.style.stroke = isExcluded ? '#ef4444' : '';
   }
 
   // 评级
   let grade = '', color = '';
-  if (score >= 8.5) { grade = '优秀 · 强烈推荐'; color = '#10b981'; }
+  if (isExcluded) {
+    grade = '位于禁区 · 不予打分'; color = '#ef4444';
+  } else if (score === null || score === undefined) {
+    grade = '暂无评分'; color = '#94a3b8';
+  } else if (score >= 8.5) { grade = '优秀 · 强烈推荐'; color = '#10b981'; }
   else if (score >= 7.0) { grade = '良好 · 推荐'; color = '#3b82f6'; }
   else if (score >= 5.5) { grade = '一般 · 可考虑'; color = '#f59e0b'; }
   else { grade = '较差 · 不推荐'; color = '#ef4444'; }
@@ -623,25 +658,36 @@ function updateQuickScore(data) {
 
   // 评分条（兼容两种后端返回格式）
   const sb = data.score_breakdown || {};
+  // 取值：优先顶层字段，并严格辨别 null/undefined（避免 0 误示）
+  const pick = (a, b) => {
+    if (a !== null && a !== undefined) return a;
+    if (b !== null && b !== undefined) return b;
+    return null;
+  };
   const dims = [
-    { label: 'POI密度', val: data.poi_score || sb.poi_density || 0, color: '#3b82f6' },
-    { label: '交通流量', val: data.traffic_score || sb.traffic_flow || 0, color: '#f59e0b' },
-    { label: '可达性', val: data.accessibility_score || sb.accessibility || 0, color: '#10b981' },
-    { label: '竞争分析', val: data.competition_score || sb.competition || 0, color: '#8b5cf6' },
+    { label: 'POI密度', val: pick(data.poi_score, sb.poi_density), color: '#3b82f6' },
+    { label: '交通流量', val: pick(data.traffic_score, sb.traffic_flow), color: '#f59e0b' },
+    { label: '可达性', val: pick(data.accessibility_score, sb.accessibility), color: '#10b981' },
+    { label: '竞争分析', val: pick(data.competition_score, sb.competition), color: '#8b5cf6' },
   ];
   const details = document.getElementById('scoreDetails');
   if (details) {
-    details.innerHTML = dims.map(d => `
+    details.innerHTML = dims.map(d => {
+      const isNull = (d.val === null || d.val === undefined);
+      const valTxt = isNull ? '—' : Number(d.val).toFixed(1);
+      const w = isNull ? 0 : Math.max(0, Math.min(100, Number(d.val) * 10));
+      return `
       <div class="score-bar-item">
         <span class="score-bar-label">${d.label}</span>
-        <div class="score-bar-track"><div class="score-bar-fill" style="width:${d.val*10}%;background:${d.color}"></div></div>
-        <span class="score-bar-val">${d.val.toFixed(1)}</span>
-      </div>`).join('');
+        <div class="score-bar-track"><div class="score-bar-fill" style="width:${w}%;background:${d.color}"></div></div>
+        <span class="score-bar-val">${valTxt}</span>
+      </div>`;
+    }).join('');
   }
 
   // 分析Tab评分徽章
   const scoreBadge = document.getElementById('scoreBadge');
-  if (scoreBadge) scoreBadge.textContent = score.toFixed(1) + '/10';
+  if (scoreBadge) scoreBadge.textContent = (score === null || score === undefined) ? '—/10' : (score.toFixed(1) + '/10');
 }
 
 function updateNearbyPOIs(pois) {
@@ -1187,7 +1233,7 @@ async function sendMessage() {
 
 async function pollChatTaskStatus(taskId) {
   let attempts = 0;
-  const maxAttempts = 60; // 最多等待3分钟（60次 × 3秒）
+  const maxAttempts = 100; // 最多等待 5 分钟（100 次 × 3 秒）
   const progressMsgs = [
     '正在检索知识库...',
     '正在查询周边POI数据...',
@@ -1242,7 +1288,7 @@ async function pollChatTaskStatus(taskId) {
         } else {
           removeThinkingMessage();
           setAgentStatus('idle');
-          addChatMessage('assistant', '⏱️ AI分析时间较长（超过3分钟），请稍后在"历史记忆"中查看结果，或重新提问。');
+          addChatMessage('assistant', '⏱️ AI分析时间较长（超过 5 分钟），请稍后在"历史记忆"中查看结果，或重新提问。');
           resolve();
         }
       } catch (e) {

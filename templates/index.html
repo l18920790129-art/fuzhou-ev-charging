@@ -141,9 +141,9 @@
               </div>
               <div class="section-label" style="margin-top:10px">手动输入坐标：</div>
               <div class="coord-input-row">
-                <input id="manualLat" type="number" step="0.0001" placeholder="纬度 26.07" value="26.0756" class="coord-input">
-                <input id="manualLng" type="number" step="0.0001" placeholder="经度 119.30" value="119.3034" class="coord-input">
-                <button class="btn-confirm" onclick="manualSelectLocation()">确认</button>
+                <input id="manualLat" type="number" inputmode="decimal" step="0.0001" min="25.0" max="26.8" placeholder="纬度 26.07" value="26.0756" class="coord-input">
+                <input id="manualLng" type="number" inputmode="decimal" step="0.0001" min="118.5" max="120.5" placeholder="经度 119.30" value="119.3034" class="coord-input">
+                <button type="button" class="btn-confirm" onclick="manualSelectLocation()">确认</button>
               </div>
             </div>
           </div>
