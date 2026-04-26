@@ -163,15 +163,15 @@ def poi_list(request):
             pois = _from_local()
             used_source = "local"
 
-        # 关键：哪怕走的是高德 raw 数据，也确保 ev_demand_score 是数字（防止前端显示 0）
-        for p in pois:
-            try:
-                if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
-                    # 简单兜底：按 daily_flow 给 5-9 分
-                    df = float(p.get("daily_flow") or 5000)
-                    p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
-            except Exception:
-                p["ev_demand_score"] = 6.0
+        # 仅对高德实时数据做兜底（缓存数据保持原始值，与历史截图一致）
+        if used_source == "amap-v3":
+            for p in pois:
+                try:
+                    if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
+                        df = float(p.get("daily_flow") or 5000)
+                        p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
+                except Exception:
+                    p["ev_demand_score"] = 6.0
 
     # 过滤：category
     if category:
