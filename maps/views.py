@@ -53,6 +53,51 @@ def _load_cache(filepath):
     return []
 
 
+# 【修复】缓存文件中可能包含程序脉冲自动生成的伪“水域禁区”（如 XX大桥水域、
+# XX公园水域、福州水域禁区N），圆心是随机地有可能落在陆地。
+# 此处做一层宽泛清洗，只保留真实水体/林地/机场条目。
+_REAL_WATER_HINTS = ("江", "河", "湖", "港", "溪", "渠", "库", "塘", "洋", "水库", "海")
+# 福州传统内巷水体：名称本身不带通用字也视为真水体
+_EXPLICIT_WATER_NAMES = ("左海", "东湖", "西湖", "西库")
+_ZONE_NAME_BLOCK = ("大桥", "码头", "渡口", "停车场", "服务区",
+                    "音乐厅", "博物馆", "海滨", "海岸", "海域")
+
+
+def _is_trustworthy_zone(z: dict) -> bool:
+    """对缓存/API 返回的禁区做真实性检查。
+
+    拒绝的样本：
+        - 名称包含“大桥/码头/公园/广场”以 “水域” 结尾的伪造项；
+        - “福州水域禁区N” 这种模板化名字；
+        - zone_type=water 但名称里没有任何真水体字（江/河/湖/…）。
+    """
+    name = (z.get("name") or "").strip()
+    if not name:
+        return False
+    ztype = z.get("zone_type") or ""
+    if "水域禁区" in name:
+        return False
+    if ztype == "water":
+        # 【修复】陆地设施名（大桥/码头/公园/广场）出现在水域名称里，均视为伪造
+        if any(bw in name for bw in ("大桥", "码头", "渡口", "海滨", "海岸", "海域",
+                                      "公园", "广场", "服务区", "停车场")):
+            return False
+        if name.endswith("水域") and not any(h in name for h in ("江", "河", "湖", "渠", "库")):
+            return False
+        # 显式放行已知内巷水体（左海/东湖/西湖……）
+        if any(name.startswith(h) for h in _EXPLICIT_WATER_NAMES):
+            return True
+        if not any(h in name for h in _REAL_WATER_HINTS):
+            return False
+    elif ztype == "forest":
+        if not any(h in name for h in ("森林", "保护区", "湿地", "风景区", "自然")):
+            return False
+    elif ztype == "airport":
+        if "机场" not in name:
+            return False
+    return True
+
+
 def _amap_confirms_land(amap_info):
     """重写高德“陆地确认”判定，避免原“... or amap_info and not is_restricted”优先级误报。"""
     if not amap_info:
@@ -273,7 +318,12 @@ def exclusion_zones(request):
         if not amap_ok:
             cached = _load_cache(_EXCLUSIONS_CACHE)
             if cached:
-                data.extend(cached)
+                # 【修复】对缓存做真实性过滤，丢弃伪造的“XX大桥水域”“福州水域禁区N”等条目
+                data.extend([z for z in cached if _is_trustworthy_zone(z)])
+
+    # 【修复】高德实时返回的数据同样做一次真实性过滤（防止旧版 amap_service 或其他调用夹带垂直爱好者）
+    if source == 'full':
+        data = [z for z in data if _is_trustworthy_zone(z)]
 
     # 2) 本地补充：仅当未从高德/缓存获取到数据时才叠加本地数据
     #    （缓存文件已包含全量数据，不需要叠加）
@@ -339,9 +389,15 @@ def check_location(request):
     amap_is_land = _amap_confirms_land(amap_info)
 
     for c in local_conflicts:
-        # 水域禁区：高德确认为陆地则跳过（高德权威更高）
-        if c["zone_type"] == "water" and amap_is_land:
-            continue
+        # 【修复】水域禁区：只有当“本地禁区本身也是可信条目”且高德确认陆地时才跳过；
+        # 对于“XX大桥水域”这类伪造本地禁区，高德说是陆地也不奔际，直接跳过。
+        if c["zone_type"] == "water":
+            if not _is_trustworthy_zone({"name": c.get("name", ""), "zone_type": "water"}):
+                # 伪禁区：无论高德怎么说都跳过（不应限制选点）
+                continue
+            if amap_is_land:
+                # 可信本地禁区 + 高德确认陆地 → 以高德为准跳过
+                continue
         # 其他禁区（林地/保护区/军事区等）或高德未返回陆地确认：保留冲突
         conflicts.append({k: v for k, v in c.items() if k != "zone_type"})
 

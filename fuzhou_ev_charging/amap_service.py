@@ -154,6 +154,11 @@ _LAND_POI_TYPE_PREFIXES = (
 def _is_land_aoi(aoi: Dict[str, Any]) -> bool:
     name = aoi.get("name", "") or ""
     t = aoi.get("type", "") or ""
+    # 【修复】名称含水域关键字（如“闽江公园”“乌龙江大桥水域”“江滨公园”）的 AOI：
+    # 它们的几何往往是沿江狭长条带，位于江面的候选点也会命中；
+    # 直接排除出“陆地上下文”，否则会把江心点误判为陆地。
+    if _contains_any(name, _WATER_KEYWORDS):
+        return False
     if t[:6] in _LAND_AOI_TYPES:
         return True
     # 风景名胜 110101 也算陆地（公园 / 广场）
@@ -165,7 +170,11 @@ def _is_land_aoi(aoi: Dict[str, Any]) -> bool:
 
 
 def _is_land_poi(poi: Dict[str, Any]) -> bool:
+    name = poi.get("name", "") or ""
     t = poi.get("type", "") or ""
+    # 【修复】同上：名称含水域关键字的 POI 不能当作陆地证据
+    if _contains_any(name, _WATER_KEYWORDS):
+        return False
     if not t:
         return False
     if any(t.startswith(x) for x in _LAND_POI_TYPE_PREFIXES):
@@ -225,7 +234,15 @@ def environment_check(lat: float, lng: float) -> Dict[str, Any]:
         "家园", "花园", "中心", "学校", "学院", "酒店", "医院",
     ))
 
-    if not has_land_context:
+    # 【修复】水域判定放宽：即使周边存在陆地 AOI/POI，也要先检查
+    # “地址/AOI 名称 是否含明确水域关键字” 这种强证据；
+    # 因为高德对江面点经常同时返回沿江公园 AOI（如“闽江公园”），
+    # 旧逻辑会让 has_land_context=True 从而完全跳过水域判定。
+    addr_is_water_like = bool(addr) and _contains_any(addr, _WATER_KEYWORDS)
+    aoi_name_has_water = any(_contains_any(a.get("name", "") or "", _WATER_KEYWORDS) for a in aois)
+    strong_water_hint = addr_is_water_like or aoi_name_has_water
+
+    if (not has_land_context) or strong_water_hint:
         # 1) 周边 250m 内搜索水域 POI（自然地名及特殊类型）
         around = place_around(
             lat, lng,
@@ -261,6 +278,28 @@ def environment_check(lat: float, lng: float) -> Dict[str, Any]:
         if not is_water and addr and _contains_any(addr, _WATER_KEYWORDS) and street_level_only:
             is_water = True
             water_reason.append(f"地址退化至水域：{addr}")
+
+        # 4) 【新增】regeo 返回的 AOI 名称明确含水域关键字（如“闽江公园”“乌龙江大桥水域”），
+        # 且周边 150m 内无任何“纯陆地 POI”反证 → 视为水面。
+        if not is_water and aoi_name_has_water:
+            # 复用 around 请求结果；若为空再做一次小半径的 around（不限类型）
+            land_counter_pois = []
+            around_any = place_around(lat, lng, radius=150, offset=15) or {}
+            for p in around_any.get("pois", []) or []:
+                if not isinstance(p, dict):
+                    continue
+                nm = p.get("name", "") or ""
+                try:
+                    dist = float(p.get("distance", "99999"))
+                except Exception:
+                    dist = 99999
+                if dist <= 150 and not _contains_any(nm, _WATER_KEYWORDS) and _is_land_poi(p):
+                    land_counter_pois.append(nm)
+            if not land_counter_pois:
+                is_water = True
+                hit_aoi = next((a.get("name", "") for a in aois
+                                if _contains_any(a.get("name", "") or "", _WATER_KEYWORDS)), "")
+                water_reason.append(f"AOI 指向水域：{hit_aoi or addr}，且 150m 内无陆地 POI 反证")
 
     is_restricted = is_water or is_forest
     reason = "；".join(water_reason + forest_reason) if is_restricted else ""
@@ -580,10 +619,13 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
     if cached is not None:
         return cached
 
+    # 【修复】不同 typecode 的水体宽度差很多，统一 0.5km 会把河道画成一大块；
+    # 190204 河流 0.35km / 190205 湖泊 0.8km / 190206 水库 1.2km / 190207 海洋 0.6km
+    _WATER_RADIUS = {"190204": 0.35, "190205": 0.8, "190206": 1.2, "190207": 0.6}
     jobs: List[Tuple[str, str, str, int, str, float, str]] = []
     # (keywords, types, city, max_pages, ztype, radius_km, label)
     for tc in EXCLUSION_WATER_TYPES:
-        jobs.append(("", tc, city, 3, "water", 0.5, "水域/河道"))
+        jobs.append(("", tc, city, 3, "water", _WATER_RADIUS.get(tc, 0.5), "水域/河道"))
     jobs.append(("森林公园", "", city, 2, "forest", 1.0, "林地/保护区"))
     jobs.append(("自然保护区", "", city, 1, "forest", 1.2, "自然保护区"))
     jobs.append(("机场", "150200", city, 1, "airport", 2.0, "机场管控区"))
@@ -602,6 +644,33 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
     with ThreadPoolExecutor(max_workers=6) as ex:
         batches = list(ex.map(run, jobs))
 
+    # 【修复】名称黑名单：桥不是水域禁区，渡口/码头也不算
+    _NAME_BLOCK = ("大桥", "大桥北", "大桥南", "大桥西", "大桥东",
+                   "码头", "渡口", "停车场", "服务区",
+                   "音乐厅", "博物馆", "公园", "广场",
+                   "海滨", "海岸", "海域",  # 海岸线不用禁，有需要也由官方数据盖
+                   )
+    # 【修复】水域名称必须含水体字，避免“福州鼓楼区水域禁区1”这种伪造模板
+    _REAL_WATER_HINTS = ("江", "河", "湖", "港", "溪", "渠", "库", "塘", "洋", "海", "水库")
+
+    _EXPLICIT_WATER_NAMES = ("左海", "东湖", "西湖", "西库")
+
+    def _is_valid_water_name(name: str) -> bool:
+        # 拒绝“福州水域禁区N”模板、“XX大桥水域”、“XX公园水域”、“XX海滨/海域”
+        if "水域禁区" in name:
+            return False
+        # 中文“水域”后缀很多是伪造；除非前缀是已知真水体名称
+        if name.endswith("水域") and not any(h in name for h in ("江", "河", "湖", "渠", "库")):
+            return False
+        # 陆地设施名出现在水域名称里 → 伪造
+        if any(bw in name for bw in ("大桥", "公园", "广场", "服务区", "停车场")):
+            return False
+        # 显式放行已知内巷水体（左海/东湖/西湖…）
+        if any(name.startswith(h) for h in _EXPLICIT_WATER_NAMES):
+            return True
+        # 必须命中至少一个真实水体特征字
+        return any(h in name for h in _REAL_WATER_HINTS)
+
     out: List[dict] = []
     seen_names = set()
     for ztype, radius_km, label, pois in batches:
@@ -611,6 +680,22 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
                 continue
             name = np["name"]
             if not name or name in seen_names:
+                continue
+            # 【修复】类型码白名单：水域必须在 190204〜190207 内；除森林/机场用关键字命中外，其他一律丢弃
+            tc = (np.get("typecode") or "")[:6]
+            if ztype == "water":
+                if tc not in {"190204", "190205", "190206", "190207"}:
+                    continue
+                if not _is_valid_water_name(name):
+                    continue
+            elif ztype == "forest":
+                # 森林名称含“森林/保护区/湿地/风景区”之一才算
+                if not any(h in name for h in ("森林", "保护区", "湿地", "风景区", "自然")):
+                    continue
+            elif ztype == "airport":
+                if "机场" not in name:
+                    continue
+            if any(bw in name for bw in _NAME_BLOCK) and ztype != "forest" and ztype != "airport":
                 continue
             seen_names.add(name)
             out.append({
@@ -624,10 +709,11 @@ def fetch_city_exclusions(city: str = "福州") -> List[dict]:
                 "description": np.get("address") or np.get("adname"),
                 "boundary": None,
                 "source": "amap-v3",
+                "typecode": np.get("typecode", ""),
             })
 
     # 门槛：总量太少（通常高德抽风）不写缓存
-    if len(out) >= 60:
+    if len(out) >= 30:
         _city_cache_set(ck, out)
     return out
 
