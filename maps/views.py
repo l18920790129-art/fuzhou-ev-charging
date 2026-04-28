@@ -208,15 +208,28 @@ def poi_list(request):
             pois = _from_local()
             used_source = "local"
 
-        # 仅对高德实时数据做兜底（缓存数据保持原始值，与历史截图一致）
-        if used_source == "amap-v3":
+        # 【修复】对高德实时数据和缓存数据都做评分兜底，防止排行榜全0
+        if used_source in ("amap-v3", "cache"):
             for p in pois:
                 try:
                     if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
                         df = float(p.get("daily_flow") or 5000)
                         p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
+                    if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
+                        # 根据类别给一个合理的默认人流量
+                        cat = p.get("category", "")
+                        default_flows = {
+                            "shopping_mall": 25000, "supermarket": 12000,
+                            "office_building": 15000, "hospital": 10000,
+                            "school": 18000, "hotel": 5000, "restaurant": 3000,
+                            "subway_station": 35000, "bus_station": 20000,
+                            "residential_area": 6000, "scenic_spot": 12000,
+                            "sports_center": 5000,
+                        }
+                        p["daily_flow"] = default_flows.get(cat, 5000)
                 except Exception:
                     p["ev_demand_score"] = 6.0
+                    p["daily_flow"] = 5000
 
     # 过滤：category
     if category:
