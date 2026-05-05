@@ -177,7 +177,7 @@ async function loadDashboard() {
     // 逐个请求，防止 Promise.all 因一个超时而全部失败
     let pois = [], roads = [], stations = [], zones = [];
     try {
-      const r = await fetchWithTimeout(`${API.maps}/pois/`, 30000);
+      const r = await fetchWithTimeout(`${API.maps}/pois/?source=full`, 30000);
       const d = await r.json(); pois = d.data || [];
     } catch(e) { console.warn('POI fetch failed:', e); }
     try {
@@ -644,7 +644,7 @@ function updateNearbyPOIs(pois) {
 // ============================================================
 async function loadPOIMarkers() {
   try {
-    const res = await fetch(`${API.maps}/pois/`);
+    const res = await fetch(`${API.maps}/pois/?source=full`);
     const data = await res.json();
     const pois = data.data || data.results || [];
     if (!pois.length) { showToast('暂无POI数据', 'warning'); return; }
