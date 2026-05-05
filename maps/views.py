@@ -191,8 +191,13 @@ def poi_list(request):
     if source == "local":
         pois = _from_local()
     else:
-        # 优先级：高德API -> 缓存JSON -> 本地数据库
-        if amap_fetch_city_pois is not None:
+        # 【修复】优先级调整：缓存JSON(709条) -> 高德API -> 本地数据库
+        # 缓存文件包含完整的709条POI数据（经过精心筛选和评分），
+        # 高德实时API因QPS限制通常只能拿到400~600条，数量不稳定。
+        pois = _load_cache(_POIS_CACHE)
+        if pois:
+            used_source = "cache"
+        elif amap_fetch_city_pois is not None:
             try:
                 pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
                 if pois:
@@ -201,32 +206,43 @@ def poi_list(request):
                 logger.warning("amap_fetch_city_pois failed: %s", e)
                 pois = []
         if not pois:
-            pois = _load_cache(_POIS_CACHE)
-            if pois:
-                used_source = "cache"
-        if not pois:
             pois = _from_local()
             used_source = "local"
 
-        # 【修复】对高德实时数据和缓存数据都做评分兜底，防止排行榜全0
+        # 【修复】对高德实时数据和缓存数据做差异化评分兜底，防止排行榜同质化
         if used_source in ("amap-v3", "cache"):
+            try:
+                from fuzhou_ev_charging.amap_service import _calc_flow_and_score
+            except ImportError:
+                _calc_flow_and_score = None
             for p in pois:
                 try:
                     if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
-                        df = float(p.get("daily_flow") or 5000)
-                        p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
+                        if _calc_flow_and_score:
+                            flow, score = _calc_flow_and_score(
+                                p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
+                            p["ev_demand_score"] = score
+                            if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
+                                p["daily_flow"] = flow
+                        else:
+                            df = float(p.get("daily_flow") or 5000)
+                            p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
                     if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
-                        # 根据类别给一个合理的默认人流量
-                        cat = p.get("category", "")
-                        default_flows = {
-                            "shopping_mall": 25000, "supermarket": 12000,
-                            "office_building": 15000, "hospital": 10000,
-                            "school": 18000, "hotel": 5000, "restaurant": 3000,
-                            "subway_station": 35000, "bus_station": 20000,
-                            "residential_area": 6000, "scenic_spot": 12000,
-                            "sports_center": 5000,
-                        }
-                        p["daily_flow"] = default_flows.get(cat, 5000)
+                        if _calc_flow_and_score:
+                            flow, _ = _calc_flow_and_score(
+                                p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
+                            p["daily_flow"] = flow
+                        else:
+                            cat = p.get("category", "")
+                            default_flows = {
+                                "shopping_mall": 25000, "supermarket": 12000,
+                                "office_building": 15000, "hospital": 10000,
+                                "school": 18000, "hotel": 5000, "restaurant": 3000,
+                                "subway_station": 35000, "bus_station": 20000,
+                                "residential_area": 6000, "scenic_spot": 12000,
+                                "sports_center": 5000,
+                            }
+                            p["daily_flow"] = default_flows.get(cat, 5000)
                 except Exception:
                     p["ev_demand_score"] = 6.0
                     p["daily_flow"] = 5000
@@ -304,10 +320,12 @@ def exclusion_zones(request):
     source = request.GET.get('source', 'local')
     data: list = []
 
-    # 1) 高德真实数据：河流/湖泊/水库/森林公园/机场
-    amap_ok = False
+    # 1) 【修复】优先使用缓存文件（29条精确禁区），确保数据稳定
     if source == 'full':
-        if amap_fetch_city_exclusions is not None:
+        cached = _load_cache(_EXCLUSIONS_CACHE)
+        if cached:
+            data.extend([z for z in cached if _is_trustworthy_zone(z)])
+        elif amap_fetch_city_exclusions is not None:
             try:
                 raw = amap_fetch_city_exclusions(city="福州") or []
                 if raw:
@@ -324,15 +342,8 @@ def exclusion_zones(request):
                             "boundary": z.get("boundary"),
                             "source": "amap-v3",
                         })
-                    amap_ok = True
             except Exception as e:
                 logger.warning("amap_fetch_city_exclusions failed: %s", e)
-        # 高德失败时从缓存文件读取
-        if not amap_ok:
-            cached = _load_cache(_EXCLUSIONS_CACHE)
-            if cached:
-                # 【修复】对缓存做真实性过滤，丢弃伪造的“XX大桥水域”“福州水域禁区N”等条目
-                data.extend([z for z in cached if _is_trustworthy_zone(z)])
 
     # 【修复】高德实时返回的数据同样做一次真实性过滤（防止旧版 amap_service 或其他调用夹带垂直爱好者）
     if source == 'full':
@@ -385,6 +396,27 @@ def check_location(request):
                 "distance_km": round(dist, 3),
                 "source": "local_zone",
             })
+
+    # 【修复】补充缓存禁区检测（解决线上数据库为空时本地禁区检查失效的问题）
+    # 缓存文件包含29个精确禁区（闽江各段、乌龙江、水库、森林公园、机场等）
+    if not local_conflicts:
+        cached_zones = _load_cache(_EXCLUSIONS_CACHE)
+        if cached_zones:
+            for z in cached_zones:
+                if not _is_trustworthy_zone(z):
+                    continue
+                zlat = z.get('center_lat', 0)
+                zlng = z.get('center_lng', 0)
+                zradius = z.get('radius_km', 0.3)
+                dist = haversine(lat, lng, zlat, zlng)
+                if dist <= zradius:
+                    local_conflicts.append({
+                        "name": z.get('name', ''),
+                        "type": {'water': '水域', 'forest': '林地', 'airport': '机场', 'protected': '保护区'}.get(z.get('zone_type', ''), '禁区'),
+                        "zone_type": z.get('zone_type', 'water'),
+                        "distance_km": round(dist, 3),
+                        "source": "cache_zone",
+                    })
 
     # 2) 高德实时语义检测（水域 / 林地）
     amap_info = None
@@ -505,10 +537,12 @@ def candidates_list(request):
     source = request.GET.get('source', 'local')
     data: list = []
 
-    # 1) 高德真实充电站
-    amap_ok = False
+    # 1) 【修复】优先使用缓存文件（112条充电站），确保数量稳定
     if source == 'full':
-        if amap_fetch_city_stations is not None:
+        cached = _load_cache(_STATIONS_CACHE)
+        if cached:
+            data.extend(cached)
+        elif amap_fetch_city_stations is not None:
             try:
                 raw = amap_fetch_city_stations(city="福州", max_pages=4) or []
                 if raw:
@@ -527,14 +561,8 @@ def candidates_list(request):
                             "typecode": s.get("typecode", ""),
                             "source": "amap-v3",
                         })
-                    amap_ok = True
             except Exception as e:
                 logger.warning("amap_fetch_city_stations failed: %s", e)
-        # 高德失败时从缓存文件读取
-        if not amap_ok:
-            cached = _load_cache(_STATIONS_CACHE)
-            if cached:
-                data.extend(cached)
 
     # 2) 本地 CandidateLocation（候选/规划中）
     #    仅当未从高德/缓存获取到数据时才叠加本地数据
@@ -580,6 +608,25 @@ def quick_score_location(request):
                 "zone_type": zone.zone_type, "distance_km": round(dist, 3),
             })
 
+    # 【修复】补充缓存禁区检测（解决线上数据库为空时本地禁区检查失效的问题）
+    if not local_conflicts:
+        cached_zones = _load_cache(_EXCLUSIONS_CACHE)
+        if cached_zones:
+            for z in cached_zones:
+                if not _is_trustworthy_zone(z):
+                    continue
+                zlat = z.get('center_lat', 0)
+                zlng = z.get('center_lng', 0)
+                zradius = z.get('radius_km', 0.3)
+                dist = haversine(lat, lng, zlat, zlng)
+                if dist <= zradius:
+                    local_conflicts.append({
+                        "name": z.get('name', ''),
+                        "type": {'water': '水域', 'forest': '林地', 'airport': '机场', 'protected': '保护区'}.get(z.get('zone_type', ''), '禁区'),
+                        "zone_type": z.get('zone_type', 'water'),
+                        "distance_km": round(dist, 3),
+                    })
+
     amap_info = None
     if amap_environment_check is not None:
         try:
@@ -592,8 +639,11 @@ def quick_score_location(request):
     amap_is_land = _amap_confirms_land(amap_info)
 
     for c in local_conflicts:
-        if c["zone_type"] == "water" and amap_is_land:
-            continue
+        if c["zone_type"] == "water":
+            if not _is_trustworthy_zone({"name": c.get("name", ""), "zone_type": "water"}):
+                continue
+            if amap_is_land:
+                continue
         conflicts.append({k: v for k, v in c.items() if k != "zone_type"})
 
     if amap_info and amap_info.get("is_restricted"):
@@ -632,19 +682,52 @@ def quick_score_location(request):
         return JsonResponse(payload)
 
     # 2. POI密度评分（2km范围内）
-    all_pois = POIData.objects.all()
+    # 【修复】优先使用数据库，数据库为空时使用缓存文件（解决线上周边POI=0的问题）
+    all_pois_db = list(POIData.objects.all())
     nearby_pois = []
-    for p in all_pois:
-        dist = haversine(lat, lng, p.latitude, p.longitude)
-        if dist <= 2.0:
-            nearby_pois.append({
-                "id": p.id, "name": p.name, "category": p.category,
-                "category_display": p.get_category_display(),
-                "lat": p.latitude, "lng": p.longitude,
-                "ev_demand_score": p.ev_demand_score,
-                "daily_flow": p.daily_flow,
-                "distance_km": round(dist, 3)
-            })
+    if all_pois_db:
+        for p in all_pois_db:
+            dist = haversine(lat, lng, p.latitude, p.longitude)
+            if dist <= 2.0:
+                nearby_pois.append({
+                    "id": p.id, "name": p.name, "category": p.category,
+                    "category_display": p.get_category_display(),
+                    "lat": p.latitude, "lng": p.longitude,
+                    "ev_demand_score": p.ev_demand_score,
+                    "daily_flow": p.daily_flow,
+                    "distance_km": round(dist, 3)
+                })
+    else:
+        # 数据库为空，使用缓存POI文件
+        cached_pois = _load_cache(_POIS_CACHE)
+        if cached_pois:
+            try:
+                from fuzhou_ev_charging.amap_service import _calc_flow_and_score
+            except ImportError:
+                _calc_flow_and_score = None
+            for p in cached_pois:
+                try:
+                    plat = float(p.get('lat', 0))
+                    plng = float(p.get('lng', 0))
+                except (ValueError, TypeError):
+                    continue
+                dist = haversine(lat, lng, plat, plng)
+                if dist <= 2.0:
+                    ev_score = p.get('ev_demand_score', 0)
+                    daily_flow = p.get('daily_flow', 0)
+                    if (not ev_score or float(ev_score) <= 0) and _calc_flow_and_score:
+                        daily_flow, ev_score = _calc_flow_and_score(
+                            p.get('category', ''), p.get('name', ''),
+                            p.get('district', '') or p.get('adname', ''))
+                    nearby_pois.append({
+                        "id": p.get('id', ''), "name": p.get('name', ''),
+                        "category": p.get('category', ''),
+                        "category_display": p.get('category_display', p.get('category', '')),
+                        "lat": plat, "lng": plng,
+                        "ev_demand_score": float(ev_score) if ev_score else 6.0,
+                        "daily_flow": int(daily_flow) if daily_flow else 5000,
+                        "distance_km": round(dist, 3)
+                    })
     nearby_pois.sort(key=lambda x: x['distance_km'])
 
     poi_count = len(nearby_pois)
@@ -652,7 +735,7 @@ def quick_score_location(request):
     poi_score = min(10.0, (poi_count / 8.0) * 5.0 + avg_ev_demand * 0.5)
 
     # 3. 交通流量评分（3km范围内主干道）
-    all_roads = TrafficFlow.objects.all()
+    all_roads = list(TrafficFlow.objects.all())
     nearby_roads = []
     for r in all_roads:
         dist = haversine(lat, lng, r.center_lat, r.center_lng)
@@ -676,13 +759,27 @@ def quick_score_location(request):
     accessibility_score = min(10.0, highway_count * 2.0 + main_road_count * 1.5 + 4.0)
 
     # 5. 竞争分析（现有充电站数量）
+    # 【修复】数据库为空时使用缓存充电站数据
     from maps.models import CandidateLocation
-    existing_stations = CandidateLocation.objects.filter(status='existing')
+    existing_stations = list(CandidateLocation.objects.filter(status='existing'))
     competition_count = 0
-    for s in existing_stations:
-        dist = haversine(lat, lng, s.latitude, s.longitude)
-        if dist <= 1.5:
-            competition_count += 1
+    if existing_stations:
+        for s in existing_stations:
+            dist = haversine(lat, lng, s.latitude, s.longitude)
+            if dist <= 1.5:
+                competition_count += 1
+    else:
+        cached_stations = _load_cache(_STATIONS_CACHE)
+        if cached_stations:
+            for s in cached_stations:
+                try:
+                    slat = float(s.get('lat', 0))
+                    slng = float(s.get('lng', 0))
+                except (ValueError, TypeError):
+                    continue
+                dist = haversine(lat, lng, slat, slng)
+                if dist <= 1.5:
+                    competition_count += 1
     # 竞争底分 2.0，避免 0 分误导
     competition_score = max(2.0, 10.0 - competition_count * 2.5)
 

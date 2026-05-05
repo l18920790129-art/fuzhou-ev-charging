@@ -18,29 +18,86 @@ def haversine(lat1, lng1, lat2, lng2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
+def _load_cache_file(filename):
+    """加载缓存JSON文件"""
+    import os
+    from django.conf import settings
+    cache_dir = os.path.join(settings.BASE_DIR, "data", "amap_cache")
+    path = os.path.join(cache_dir, filename)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
 def build_report_content(task):
     from maps.models import POIData, TrafficFlow
     lat, lng = task.latitude, task.longitude
-    pois = POIData.objects.all()
-    nearby_pois = sorted(
-        [{"name": p.name, "category": p.get_category_display(), "distance_km": round(haversine(lat,lng,p.latitude,p.longitude),3),
-          "daily_flow": p.daily_flow, "ev_demand_score": p.ev_demand_score}
-         for p in pois if haversine(lat,lng,p.latitude,p.longitude) <= 1.0],
-        key=lambda x: x["distance_km"])
-    roads = TrafficFlow.objects.all()
+
+    # 【修复】优先使用数据库，数据库为空时使用缓存文件
+    pois_db = list(POIData.objects.all())
+    if pois_db:
+        nearby_pois = sorted(
+            [{"name": p.name, "category": p.get_category_display(),
+              "distance_km": round(haversine(lat,lng,p.latitude,p.longitude),3),
+              "daily_flow": p.daily_flow, "ev_demand_score": p.ev_demand_score}
+             for p in pois_db if haversine(lat,lng,p.latitude,p.longitude) <= 1.0],
+            key=lambda x: x["distance_km"])
+        high_pois_raw = [p for p in pois_db if p.ev_demand_score >= 7.0]
+        high_pois_raw.sort(key=lambda p: -p.ev_demand_score)
+        alternatives = [
+            {"name": f"{p.name}周边停车区", "lat": round(p.latitude+0.001,6), "lng": round(p.longitude+0.001,6),
+             "score": p.ev_demand_score, "reason": f"靠近{p.name}（{p.get_category_display()}），日均人流{p.daily_flow}人",
+             "distance_from_selected": round(haversine(lat,lng,p.latitude,p.longitude),2)}
+            for p in high_pois_raw if haversine(lat,lng,p.latitude,p.longitude) >= 0.1
+        ][:8]
+    else:
+        # 数据库为空，使用缓存POI文件
+        cached_pois = _load_cache_file("city_pois.json")
+        try:
+            from fuzhou_ev_charging.amap_service import _calc_flow_and_score
+        except ImportError:
+            _calc_flow_and_score = None
+        nearby_pois = []
+        high_pois_cache = []
+        for p in cached_pois:
+            try:
+                plat, plng = float(p.get('lat',0)), float(p.get('lng',0))
+            except (ValueError, TypeError):
+                continue
+            dist = haversine(lat, lng, plat, plng)
+            ev_score = float(p.get('ev_demand_score') or 0)
+            daily_flow = int(p.get('daily_flow') or 0)
+            if (not ev_score or ev_score <= 0) and _calc_flow_and_score:
+                daily_flow, ev_score = _calc_flow_and_score(
+                    p.get('category',''), p.get('name',''),
+                    p.get('district','') or p.get('adname',''))
+            item = {"name": p.get('name',''), "category": p.get('category_display', p.get('category','')),
+                    "distance_km": round(dist,3), "daily_flow": int(daily_flow),
+                    "ev_demand_score": round(float(ev_score),1)}
+            if dist <= 1.0:
+                nearby_pois.append(item)
+            if float(ev_score) >= 7.0:
+                high_pois_cache.append({**item, 'lat': plat, 'lng': plng})
+        nearby_pois.sort(key=lambda x: x['distance_km'])
+        high_pois_cache.sort(key=lambda x: -x['ev_demand_score'])
+        alternatives = [
+            {"name": f"{p['name']}周边停车区", "lat": round(p['lat']+0.001,6), "lng": round(p['lng']+0.001,6),
+             "score": p['ev_demand_score'], "reason": f"靠近{p['name']}（{p['category']}），日均人流{p['daily_flow']}人",
+             "distance_from_selected": p['distance_km']}
+            for p in high_pois_cache if p['distance_km'] >= 0.1
+        ][:8]
+
+    roads_db = list(TrafficFlow.objects.all())
     nearby_roads = sorted(
         [{"road_name": r.road_name, "road_level": r.get_road_level_display(),
           "distance_km": round(haversine(lat,lng,r.center_lat,r.center_lng),3),
           "daily_flow": r.daily_flow, "ev_ratio": r.ev_ratio}
-         for r in roads if haversine(lat,lng,r.center_lat,r.center_lng) <= 1.5],
+         for r in roads_db if haversine(lat,lng,r.center_lat,r.center_lng) <= 1.5],
         key=lambda x: x["distance_km"])
-    high_pois = POIData.objects.filter(ev_demand_score__gte=7.0).order_by("-ev_demand_score")
-    alternatives = [
-        {"name": f"{p.name}周边停车区", "lat": round(p.latitude+0.001,6), "lng": round(p.longitude+0.001,6),
-         "score": p.ev_demand_score, "reason": f"靠近{p.name}（{p.get_category_display()}），日均人流{p.daily_flow}人",
-         "distance_from_selected": round(haversine(lat,lng,p.latitude,p.longitude),2)}
-        for p in high_pois if haversine(lat,lng,p.latitude,p.longitude) >= 0.1
-    ][:8]
     return {
         "selected_location": {"lat": lat, "lng": lng,
             "address": task.address or f"福州市 ({lat:.4f}, {lng:.4f})",
@@ -173,12 +230,37 @@ def generate_report(request):
         from analysis.models import AnalysisTask as AT
         from maps.models import POIData, TrafficFlow, ExclusionZone
         lat, lng = float(direct_lat), float(direct_lng)
-        # 计算快速评分
-        pois = POIData.objects.all()
-        nearby_pois = [p for p in pois if haversine(lat,lng,p.latitude,p.longitude) <= 1.0]
-        poi_score = min(10, len(nearby_pois) * 0.8 + sum(p.ev_demand_score for p in nearby_pois[:5]) / max(len(nearby_pois[:5]),1) * 0.5) if nearby_pois else 3.0
-        roads = TrafficFlow.objects.all()
-        nearby_roads = [r for r in roads if haversine(lat,lng,r.center_lat,r.center_lng) <= 1.5]
+        # 【修复】计算快速评分：数据库为空时使用缓存文件
+        pois_db = list(POIData.objects.all())
+        if pois_db:
+            nearby_pois = [p for p in pois_db if haversine(lat,lng,p.latitude,p.longitude) <= 1.0]
+            poi_score = min(10, len(nearby_pois) * 0.8 + sum(p.ev_demand_score for p in nearby_pois[:5]) / max(len(nearby_pois[:5]),1) * 0.5) if nearby_pois else 3.0
+        else:
+            cached_pois = _load_cache_file("city_pois.json")
+            try:
+                from fuzhou_ev_charging.amap_service import _calc_flow_and_score
+            except ImportError:
+                _calc_flow_and_score = None
+            nearby_pois_count = 0
+            ev_scores = []
+            for p in cached_pois:
+                try:
+                    plat, plng = float(p.get('lat',0)), float(p.get('lng',0))
+                except (ValueError, TypeError):
+                    continue
+                if haversine(lat, lng, plat, plng) <= 1.0:
+                    nearby_pois_count += 1
+                    ev_score = float(p.get('ev_demand_score') or 0)
+                    if (not ev_score or ev_score <= 0) and _calc_flow_and_score:
+                        _, ev_score = _calc_flow_and_score(
+                            p.get('category',''), p.get('name',''),
+                            p.get('district','') or p.get('adname',''))
+                    ev_scores.append(float(ev_score))
+            avg_ev = sum(ev_scores[:5]) / max(len(ev_scores[:5]),1) if ev_scores else 6.0
+            nearby_pois = [None] * nearby_pois_count  # placeholder for count
+            poi_score = min(10, nearby_pois_count * 0.8 + avg_ev * 0.5) if nearby_pois_count else 3.0
+        roads_db = list(TrafficFlow.objects.all())
+        nearby_roads = [r for r in roads_db if haversine(lat,lng,r.center_lat,r.center_lng) <= 1.5]
         traffic_score = min(10, sum(r.daily_flow for r in nearby_roads[:3]) / 10000) if nearby_roads else 3.0
         accessibility_score = 8.5 if nearby_roads else 5.0
         total_score = round(poi_score*0.35 + traffic_score*0.30 + accessibility_score*0.20 + 7.0*0.15, 2)

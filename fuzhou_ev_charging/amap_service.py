@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -493,28 +494,83 @@ _DAILY_FLOW_MAP = {
 }
 
 
+def _deterministic_jitter(seed_str: str, low: float = 0.85, high: float = 1.15) -> float:
+    """基于字符串哈希生成确定性的随机波动因子，保证同一 POI 每次返回相同值。"""
+    h = int(hashlib.md5(seed_str.encode('utf-8')).hexdigest()[:8], 16)
+    # 映射到 [low, high] 区间
+    return low + (h % 10000) / 10000.0 * (high - low)
+
+
+def _calc_flow_and_score(fe_category: str, name: str = "", district: str = "") -> tuple:
+    """根据类别、名称知名度和区域位置，生成差异化的人流量和评分。
+
+    使用确定性哈希而非随机数，保证同一 POI 多次请求结果一致。
+    """
+    base_flow = _DAILY_FLOW_MAP.get(fe_category, 5000)
+    base_score = _EV_DEMAND_SCORE_MAP.get(fe_category, 6.0)
+
+    # 1. 名称权重加成（知名品牌/地标给更高值）
+    name_boost = 1.0
+    if any(k in name for k in ["万达", "万象", "泰禾", "宝龙", "永辉", "苏宁", "华润"]):
+        name_boost = 1.3
+    elif any(k in name for k in ["东百", "融侨", "世欧", "正荣", "爱琴海", "大润发", "沃尔玛"]):
+        name_boost = 1.2
+    elif any(k in name for k in ["省立", "协和", "附属第一", "福州大学", "福建师范", "福建医科"]):
+        name_boost = 1.25
+    elif any(k in name for k in ["东街口", "五四路", "火车站", "南站", "机场"]):
+        name_boost = 1.35
+    elif any(k in name for k in ["香格里拉", "洲际", "凯宾斯基", "希尔顿", "万豪"]):
+        name_boost = 1.2
+    elif any(k in name for k in ["国家电网", "特来电", "星星充电", "蔚来", "特斯拉"]):
+        name_boost = 1.15
+
+    # 2. 区域权重加成（主城区比郊区人流量更高）
+    district_factor = 1.0
+    if any(d in district for d in ["鼓楼", "台江"]):
+        district_factor = 1.2
+    elif any(d in district for d in ["仓山", "晋安"]):
+        district_factor = 1.0
+    elif any(d in district for d in ["马尾", "长乐"]):
+        district_factor = 0.85
+    elif any(d in district for d in ["闽侯", "连江", "福清"]):
+        district_factor = 0.75
+    else:
+        district_factor = 0.7
+
+    # 3. 确定性波动（±15%），基于 POI 名称+区域 的哈希
+    seed = f"{name}:{district}:{fe_category}"
+    jitter = _deterministic_jitter(seed, 0.85, 1.15)
+    score_jitter = _deterministic_jitter(seed + ":score", 0.95, 1.05)
+
+    flow = int(base_flow * name_boost * district_factor * jitter)
+    score = round(min(9.8, base_score * (name_boost ** 0.3) * score_jitter), 1)
+
+    return flow, score
+
+
 def _normalize_poi(p: dict, fe_category: str = "", fe_cat_label: str = "") -> Optional[dict]:
     try:
         loc = (p.get("location") or "").split(",")
         plng, plat = float(loc[0]), float(loc[1])
     except Exception:
         return None
-    ev_score = _EV_DEMAND_SCORE_MAP.get(fe_category, 5.0)
-    daily_flow = _DAILY_FLOW_MAP.get(fe_category, 5000)
+    name = p.get("name", "")
+    district = p.get("adname") or ""
+    daily_flow, ev_score = _calc_flow_and_score(fe_category, name, district)
     return {
         "id": p.get("id") or f"{plng:.5f},{plat:.5f}",
-        "name": p.get("name", ""),
+        "name": name,
         "type": p.get("type", ""),
         "typecode": p.get("typecode", ""),
         "lat": plat,
         "lng": plng,
         "address": p.get("address") or "",
-        "adname": p.get("adname") or "",
+        "adname": district,
         "cityname": p.get("cityname") or "",
         "category": fe_category,
         "category_display": fe_cat_label,
         # 以下字段是为兼容老前端代码（POIData 结构）
-        "district": p.get("adname") or "",
+        "district": district,
         "daily_flow": daily_flow,
         "ev_demand_score": ev_score,
         "influence_weight": round(ev_score / 10.0 * 3.0, 1),
