@@ -170,10 +170,10 @@ def poi_list(request):
     lat = request.GET.get('lat')
     lng = request.GET.get('lng')
     radius = float(request.GET.get('radius', 2.0))
-    # source=local 时强制走数据库 POIData（精选 59 条带评分的种子数据），
-    # 用于数据屏 / 排行榜 / 分布图等需要稳定评分梯度的场景；
-    # 否则默认走数据库优先（保证 ev_demand_score 有效），仅在数据库为空时降级到高德 raw。
-    source = request.GET.get('source', 'local')
+    # 【终极修复 2026-05】始终优先使用缓存文件（709条固定数据），彻底屏蔽高德API和数据库路径
+    # 根因：高德API因QPS限制每次返回245~470条随机变化；数据库在线上只有59条种子数据
+    # 只有缓存文件能保证稳定返回709条完整数据
+    source = request.GET.get('source', 'cache')  # 默认走缓存
 
     def _from_local():
         qs = POIData.objects.all()
@@ -187,65 +187,53 @@ def poi_list(request):
         } for p in qs]
 
     pois: list = []
-    used_source = "local"
-    if source == "local":
-        pois = _from_local()
+    used_source = "cache"
+    # 始终优先读缓存文件，不走高德API（数量不稳定）也不走数据库（线上只有59条）
+    pois = _load_cache(_POIS_CACHE)
+    if pois:
+        used_source = "cache"
     else:
-        # 【修复】优先级调整：缓存JSON(709条) -> 高德API -> 本地数据库
-        # 缓存文件包含完整的709条POI数据（经过精心筛选和评分），
-        # 高德实时API因QPS限制通常只能拿到400~600条，数量不稳定。
-        pois = _load_cache(_POIS_CACHE)
-        if pois:
-            used_source = "cache"
-        elif amap_fetch_city_pois is not None:
-            try:
-                pois = amap_fetch_city_pois(city="福州", limit_per_cat=60) or []
-                if pois:
-                    used_source = "amap-v3"
-            except Exception as e:
-                logger.warning("amap_fetch_city_pois failed: %s", e)
-                pois = []
-        if not pois:
-            pois = _from_local()
-            used_source = "local"
+        # 缓存文件不存在时才降级到数据库（本地开发环境兜底）
+        pois = _from_local()
+        used_source = "local"
 
-        # 【修复】对高德实时数据和缓存数据做差异化评分兜底，防止排行榜同质化
-        if used_source in ("amap-v3", "cache"):
+    # 对缓存数据做差异化评分兜底，防止排行榜同质化（ev_demand_score或daily_flow为0时补全）
+    if used_source == "cache":
+        try:
+            from fuzhou_ev_charging.amap_service import _calc_flow_and_score
+        except ImportError:
+            _calc_flow_and_score = None
+        for p in pois:
             try:
-                from fuzhou_ev_charging.amap_service import _calc_flow_and_score
-            except ImportError:
-                _calc_flow_and_score = None
-            for p in pois:
-                try:
-                    if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
-                        if _calc_flow_and_score:
-                            flow, score = _calc_flow_and_score(
-                                p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
-                            p["ev_demand_score"] = score
-                            if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
-                                p["daily_flow"] = flow
-                        else:
-                            df = float(p.get("daily_flow") or 5000)
-                            p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
-                    if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
-                        if _calc_flow_and_score:
-                            flow, _ = _calc_flow_and_score(
-                                p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
+                if not p.get("ev_demand_score") or float(p.get("ev_demand_score") or 0) <= 0:
+                    if _calc_flow_and_score:
+                        flow, score = _calc_flow_and_score(
+                            p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
+                        p["ev_demand_score"] = score
+                        if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
                             p["daily_flow"] = flow
-                        else:
-                            cat = p.get("category", "")
-                            default_flows = {
-                                "shopping_mall": 25000, "supermarket": 12000,
-                                "office_building": 15000, "hospital": 10000,
-                                "school": 18000, "hotel": 5000, "restaurant": 3000,
-                                "subway_station": 35000, "bus_station": 20000,
-                                "residential_area": 6000, "scenic_spot": 12000,
-                                "sports_center": 5000,
-                            }
-                            p["daily_flow"] = default_flows.get(cat, 5000)
-                except Exception:
-                    p["ev_demand_score"] = 6.0
-                    p["daily_flow"] = 5000
+                    else:
+                        df = float(p.get("daily_flow") or 5000)
+                        p["ev_demand_score"] = round(min(9.5, 5.0 + df / 10000), 1)
+                if not p.get("daily_flow") or int(p.get("daily_flow") or 0) <= 0:
+                    if _calc_flow_and_score:
+                        flow, _ = _calc_flow_and_score(
+                            p.get("category", ""), p.get("name", ""), p.get("district") or p.get("adname", ""))
+                        p["daily_flow"] = flow
+                    else:
+                        cat = p.get("category", "")
+                        default_flows = {
+                            "shopping_mall": 25000, "supermarket": 12000,
+                            "office_building": 15000, "hospital": 10000,
+                            "school": 18000, "hotel": 5000, "restaurant": 3000,
+                            "subway_station": 35000, "bus_station": 20000,
+                            "residential_area": 6000, "scenic_spot": 12000,
+                            "sports_center": 5000,
+                        }
+                        p["daily_flow"] = default_flows.get(cat, 5000)
+            except Exception:
+                p["ev_demand_score"] = 6.0
+                p["daily_flow"] = 5000
 
     # 过滤：category
     if category:
